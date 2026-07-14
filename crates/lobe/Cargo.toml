@@ -1,0 +1,20 @@
+[package]
+name = "lobe"
+version = "0.1.5"
+edition = "2021"
+authors.workspace = true
+description = "A fast, cross-platform Brainfuck interpreter written in Rust"
+license.workspace = true
+repository.workspace = true
+keywords = ["brainfuck", "interpreter", "esolang", "bytecode", "lobe"]
+categories = ["command-line-utilities", "parser-implementations"]
+readme = "README.md"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1.0"
+
+[[bin]]
+name = "lobe"
+path = "src/main.rs"
+

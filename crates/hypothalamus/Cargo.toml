@@ -1,0 +1,20 @@
+[package]
+name = "hypothalamus"
+version = "0.6.1"
+edition = "2024"
+rust-version = "1.85"
+authors.workspace = true
+description = "An optimizing Brainfuck AOT compiler with an LLVM IR backend"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/hypothalamus"
+keywords = ["brainfuck", "compiler", "llvm", "aot"]
+categories = ["command-line-utilities", "compilers"]
+
+[dependencies]
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
