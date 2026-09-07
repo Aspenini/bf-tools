@@ -357,10 +357,10 @@ pub fn compile_with_tools(config: &CompilerConfig) -> Result<(), DriverError> {
     }
 
     let module = compile_to_llvm(config)?;
-    let output = config
-        .output
-        .clone()
-        .unwrap_or_else(|| default_output_path(&config.input, config.emit, &config.target));
+    let output = match config.output.clone() {
+        Some(path) => with_executable_extension(path, config.emit, &config.target),
+        None => default_output_path(&config.input, config.emit, &config.target),
+    };
 
     match config.emit {
         EmitKind::LlvmIr => write_llvm_ir(&output, &module),
@@ -373,6 +373,32 @@ pub fn compile_with_tools(config: &CompilerConfig) -> Result<(), DriverError> {
     }
 }
 
+/// Whether executables for `target` are expected to end in `.exe`.
+///
+/// A target with no explicit triple compiles for whatever host clang runs on,
+/// so the host decides.
+fn wants_exe_extension(target: &TargetProfile) -> bool {
+    match target.llvm_triple() {
+        Some(triple) => triple.contains("windows"),
+        None => cfg!(windows),
+    }
+}
+
+/// Add `.exe` to an explicitly requested executable path that has no extension.
+///
+/// Windows will not run a file without it, and asking for `-o hello` on Windows
+/// plainly means `hello.exe`. A path that already carries an extension is left
+/// exactly as written.
+fn with_executable_extension(output: PathBuf, emit: EmitKind, target: &TargetProfile) -> PathBuf {
+    if emit != EmitKind::Executable || output.extension().is_some() || !wants_exe_extension(target)
+    {
+        return output;
+    }
+    let mut output = output;
+    output.set_extension("exe");
+    output
+}
+
 /// Choose the default output path for a compile request.
 pub fn default_output_path(input: &Path, emit: EmitKind, target: &TargetProfile) -> PathBuf {
     let mut output = input.to_path_buf();
@@ -380,11 +406,7 @@ pub fn default_output_path(input: &Path, emit: EmitKind, target: &TargetProfile)
     match emit {
         EmitKind::Executable => {
             output.set_extension("");
-            if target
-                .llvm_triple()
-                .map(|target| target.contains("windows"))
-                .unwrap_or(false)
-            {
+            if wants_exe_extension(target) {
                 output.set_extension("exe");
             } else if output == input {
                 output.set_extension("out");
@@ -687,5 +709,56 @@ mod tests {
         let output = default_output_path(Path::new("hello.bf"), EmitKind::Image, &target);
 
         assert_eq!(output, PathBuf::from("hello.gba"));
+    }
+
+    #[test]
+    fn windows_executables_end_in_exe() {
+        let target = TargetProfile::resolve("x86_64-pc-windows-msvc");
+        let output = default_output_path(Path::new("hello.bf"), EmitKind::Executable, &target);
+
+        assert_eq!(output, PathBuf::from("hello.exe"));
+    }
+
+    #[test]
+    fn native_executables_follow_the_host() {
+        // The native target has no triple of its own, so clang builds for the
+        // host and the host decides whether `.exe` is needed.
+        let target = TargetProfile::native();
+        let output = default_output_path(Path::new("hello.bf"), EmitKind::Executable, &target);
+
+        if cfg!(windows) {
+            assert_eq!(output, PathBuf::from("hello.exe"));
+        } else {
+            assert_eq!(output, PathBuf::from("hello"));
+        }
+    }
+
+    #[test]
+    fn requested_executable_paths_gain_the_host_extension() {
+        let target = TargetProfile::native();
+        let output =
+            with_executable_extension(PathBuf::from("build/hello"), EmitKind::Executable, &target);
+
+        if cfg!(windows) {
+            assert_eq!(output, PathBuf::from("build/hello.exe"));
+        } else {
+            assert_eq!(output, PathBuf::from("build/hello"));
+        }
+    }
+
+    #[test]
+    fn requested_paths_keep_an_extension_the_user_chose() {
+        let target = TargetProfile::resolve("x86_64-pc-windows-msvc");
+
+        // An explicit extension is honoured, whatever it is.
+        assert_eq!(
+            with_executable_extension(PathBuf::from("hello.bin"), EmitKind::Executable, &target),
+            PathBuf::from("hello.bin")
+        );
+        // Only executables get the treatment.
+        assert_eq!(
+            with_executable_extension(PathBuf::from("hello"), EmitKind::Object, &target),
+            PathBuf::from("hello")
+        );
     }
 }
