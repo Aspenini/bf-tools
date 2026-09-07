@@ -1,0 +1,96 @@
+// Conway's Game of Life on a wrapping 12x12 board.
+//
+//     cranium examples/life.cra --run
+//
+// Globals are shared by every function, which suits a program built around one
+// board. Note that `grid[here(x, y)]` costs real time: a Brainfuck program has
+// to walk the tape to reach an element whose index it only learns at run time.
+
+const WIDTH = 12;
+const HEIGHT = 12;
+const CELLS = 144;
+const GENERATIONS = 8;
+
+let grid: byte[144];
+let next: byte[144];
+
+fn here(x: byte, y: byte) -> byte {
+    return y * WIDTH + x;
+}
+
+fn set_cell(x: byte, y: byte) {
+    grid[here(x, y)] = 1;
+}
+
+fn living_neighbours(x: byte, y: byte) -> byte {
+    let count = 0;
+    for dy in 0..3 {
+        for dx in 0..3 {
+            if dx == 1 && dy == 1 {
+                continue;
+            }
+            // Adding WIDTH before the modulo keeps the arithmetic unsigned.
+            let nx = (x + dx + WIDTH - 1) % WIDTH;
+            let ny = (y + dy + HEIGHT - 1) % HEIGHT;
+            count += grid[here(nx, ny)];
+        }
+    }
+    return count;
+}
+
+fn advance() {
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let neighbours = living_neighbours(x, y);
+            let alive = grid[here(x, y)];
+            let survives = 0;
+            if alive == 1 {
+                if neighbours == 2 || neighbours == 3 {
+                    survives = 1;
+                }
+            } else if neighbours == 3 {
+                survives = 1;
+            }
+            next[here(x, y)] = survives;
+        }
+    }
+    for i in 0..CELLS {
+        grid[i] = next[i];
+    }
+}
+
+fn draw(generation: byte) {
+    print("generation ");
+    print(generation);
+    putc('\n');
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if grid[here(x, y)] == 1 {
+                putc('#');
+            } else {
+                putc('.');
+            }
+        }
+        putc('\n');
+    }
+    putc('\n');
+}
+
+fn main() {
+    // A glider, which walks diagonally across the wrapping board forever.
+    set_cell(1, 0);
+    set_cell(2, 1);
+    set_cell(0, 2);
+    set_cell(1, 2);
+    set_cell(2, 2);
+
+    // A blinker, which oscillates in place.
+    set_cell(7, 6);
+    set_cell(8, 6);
+    set_cell(9, 6);
+
+    for generation in 0..GENERATIONS {
+        draw(generation);
+        advance();
+    }
+}

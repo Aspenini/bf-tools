@@ -1,0 +1,8 @@
+// The smallest useful Cranium program.
+//
+//     cranium examples/hello.cra --run
+//     cranium examples/hello.cra -o hello.bf && lobe hello.bf
+
+fn main() {
+    println("Hello, world!");
+}

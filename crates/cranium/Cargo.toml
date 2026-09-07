@@ -1,0 +1,19 @@
+[package]
+name = "cranium"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors.workspace = true
+description = "Cranium: a small structured programming language that compiles to Brainfuck"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["brainfuck", "compiler", "language", "esolang", "cranium"]
+categories = ["command-line-utilities", "compilers"]
+
+[dependencies]
+lobe = { path = "../lobe", version = "0.1.5" }
+
+[[bin]]
+name = "cranium"
+path = "src/main.rs"

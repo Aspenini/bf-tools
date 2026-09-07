@@ -90,3 +90,39 @@ fn test_non_8_bit_cell_wrapping_outputs_number() {
 
     assert_eq!(output, "65535");
 }
+
+#[test]
+fn test_output_writes_raw_bytes() {
+    // Cell 200 must leave the interpreter as one byte, the same as a compiled
+    // Brainfuck program's putchar would write, not as two UTF-8 bytes.
+    let program = "+".repeat(200) + ".";
+    assert_eq!(run_bytes(&program, CellSize::Bits8, &[]), vec![200]);
+}
+
+#[test]
+fn test_tape_size_is_configurable() {
+    use lobe::{create_runtime_with_tape, DEFAULT_TAPE_SIZE};
+
+    let runtime = create_runtime_with_tape("+", CellSize::Bits8, 100_000).unwrap();
+    assert_eq!(runtime.tape_size(), 100_000);
+
+    let runtime = create_runtime_with_tape("+", CellSize::Bits8, 0).unwrap();
+    assert_eq!(runtime.tape_size(), DEFAULT_TAPE_SIZE);
+}
+
+#[test]
+fn test_pointer_wraps_at_the_configured_tape_size() {
+    // Step left off cell zero, write there, then step right back onto it: with
+    // a four-cell tape that lands on the last cell.
+    let mut runtime = lobe::create_runtime_with_tape(
+        "<+++++++++++++++++++++++++++++++++++++++++++++++++.",
+        CellSize::Bits8,
+        4,
+    )
+    .unwrap();
+    let mut input = io::Cursor::new(Vec::new());
+    let mut output = Vec::new();
+    runtime.run_with_io(&mut input, &mut output).unwrap();
+    assert_eq!(output, vec![49]);
+    assert_eq!(runtime.tape_size(), 4);
+}

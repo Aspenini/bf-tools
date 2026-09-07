@@ -1,0 +1,59 @@
+// Bubble sort over an array, plus a linear search, both driven by indices the
+// program only knows at run time.
+//
+//     cranium examples/sort.cra --run
+
+const N = 12;
+
+let data: byte[12] = [42, 7, 19, 3, 88, 55, 1, 64, 23, 9, 77, 31];
+
+fn show(label: byte[16]) {
+    puts(label);
+    for i in 0..N {
+        putc(' ');
+        print(data[i]);
+    }
+    putc('\n');
+}
+
+fn sort() {
+    let swapped = true;
+    let limit = N;
+    while swapped {
+        swapped = false;
+        for i in 1..limit {
+            if data[i - 1] > data[i] {
+                let hold = data[i - 1];
+                data[i - 1] = data[i];
+                data[i] = hold;
+                swapped = true;
+            }
+        }
+        limit -= 1;
+    }
+}
+
+fn index_of(needle: byte) -> byte {
+    for i in 0..N {
+        if data[i] == needle {
+            return i;
+        }
+    }
+    return 255;
+}
+
+fn main() {
+    let before: byte[16] = "before:";
+    let after: byte[16] = "after: ";
+    show(before);
+    sort();
+    show(after);
+
+    let target = 55;
+    print("55 is now at index ");
+    print(index_of(target));
+    putc('\n');
+    print("99 is at index ");
+    print(index_of(99));
+    print(" (255 means not found)\n");
+}

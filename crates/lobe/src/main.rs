@@ -1,5 +1,5 @@
 use clap::{CommandFactory, Parser, ValueEnum};
-use lobe::{create_runtime, CellSize};
+use lobe::{create_runtime_with_tape, CellSize};
 use std::fs;
 use std::process;
 
@@ -13,6 +13,10 @@ struct Cli {
     /// Cell size in bits (8, 16, 32, or 64)
     #[arg(short, long, default_value = "8", value_enum)]
     bits: CellSizeArg,
+
+    /// Number of tape cells (compiled languages targeting Brainfuck often need more)
+    #[arg(short = 't', long, default_value_t = lobe::DEFAULT_TAPE_SIZE)]
+    tape_size: usize,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -72,7 +76,7 @@ fn main() {
 
     // Create runtime and run
     let cell_size = cli.bits.into();
-    let mut runtime = match create_runtime(&src, cell_size) {
+    let mut runtime = match create_runtime_with_tape(&src, cell_size, cli.tape_size) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Error: {}", e);

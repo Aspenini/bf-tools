@@ -1,0 +1,118 @@
+// An integer expression evaluator: reads a line, tokenizes it, and evaluates
+// it with the usual precedence.
+//
+//     echo "2 + 3 * 4 - 10 / 5" | cranium examples/calc.cra --run
+//     => 12
+//
+// Cranium inlines every call, so this parser is written as a loop rather than
+// with recursive descent. Precedence still works: multiplication and division
+// are folded into the current term as soon as they are seen, and the term is
+// only folded into the running total when a `+` or `-` arrives.
+//
+// Arithmetic is unsigned 16-bit, so intermediate results stay in 0..65535.
+
+const LINE_MAX = 80;
+
+let line: byte[80];
+let length = 0;
+let pos = 0;
+
+fn read_line() {
+    length = 0;
+    loop {
+        let c = getc();
+        if c == 0 || c == '\n' {
+            break;
+        }
+        if length < LINE_MAX {
+            line[length] = c;
+            length += 1;
+        }
+    }
+}
+
+fn peek() -> byte {
+    if pos >= length {
+        return 0;
+    }
+    return line[pos];
+}
+
+fn skip_spaces() {
+    while peek() == ' ' {
+        pos += 1;
+    }
+}
+
+fn parse_number() -> int {
+    skip_spaces();
+    let value: int = 0;
+    let digits = 0;
+    loop {
+        let c = peek();
+        if c < '0' || c > '9' {
+            break;
+        }
+        value = value * 10 + (c - '0') as int;
+        digits += 1;
+        pos += 1;
+    }
+    if digits == 0 {
+        println("expected a number");
+    }
+    return value;
+}
+
+fn main() {
+    read_line();
+
+    let total: int = 0;
+    let term = parse_number();
+    let adding = true;
+
+    loop {
+        skip_spaces();
+        let op = peek();
+
+        if op == '*' || op == '/' || op == '%' {
+            pos += 1;
+            let rhs = parse_number();
+            if op == '*' {
+                term = term * rhs;
+            } else if op == '/' {
+                if rhs == 0 {
+                    println("division by zero");
+                    return;
+                }
+                term = term / rhs;
+            } else {
+                if rhs == 0 {
+                    println("division by zero");
+                    return;
+                }
+                term = term % rhs;
+            }
+            continue;
+        }
+
+        // Anything that is not `*`, `/`, or `%` ends the current term.
+        if adding {
+            total = total + term;
+        } else {
+            total = total - term;
+        }
+
+        if op == '+' {
+            adding = true;
+        } else if op == '-' {
+            adding = false;
+        } else {
+            break;
+        }
+
+        pos += 1;
+        term = parse_number();
+    }
+
+    println(total);
+}
