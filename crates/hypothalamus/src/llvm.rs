@@ -236,6 +236,9 @@ impl<'a> Emitter<'a> {
             Runtime::Hosted => {
                 self.line("declare i32 @putchar(i32)");
                 self.line("declare i32 @getchar()");
+                if self.targets_windows() {
+                    self.line("declare i32 @_setmode(i32, i32)");
+                }
             }
             Runtime::Freestanding(options) => {
                 self.line(&format!("declare void @{}(i8)", options.putchar_symbol));
@@ -258,6 +261,15 @@ impl<'a> Emitter<'a> {
         self.label("entry");
         self.line("  %ptr = alloca i64, align 8");
         self.line("  store i64 0, ptr %ptr, align 8");
+        if matches!(self.runtime, Runtime::Hosted) && self.targets_windows() {
+            // Windows opens the standard streams in text mode, which would
+            // turn every `.` of a newline into two bytes and make `,` stop at
+            // a `0x1a`. Brainfuck's streams are bytes, so switch them back.
+            // These registers are named so they do not disturb the numbering
+            // of the unnamed ones the rest of the function relies on.
+            self.line("  %stdin_mode = call i32 @_setmode(i32 0, i32 32768)");
+            self.line("  %stdout_mode = call i32 @_setmode(i32 1, i32 32768)");
+        }
         self.emit_ops(ops);
         match self.runtime {
             Runtime::Hosted => self.line("  ret i32 0"),
@@ -479,6 +491,17 @@ impl<'a> Emitter<'a> {
         self.line("  unreachable");
 
         self.label(&cont_label);
+    }
+
+    /// Whether the program will run on Windows.
+    ///
+    /// A target with no explicit triple compiles for whatever host clang runs
+    /// on, so the host decides.
+    fn targets_windows(&self) -> bool {
+        match self.target_triple {
+            Some(triple) => triple.contains("windows"),
+            None => cfg!(windows),
+        }
     }
 
     fn temp(&mut self) -> String {
@@ -706,5 +729,42 @@ mod tests {
                 name: "bf-main".to_string()
             }
         );
+    }
+
+    #[test]
+    fn windows_targets_switch_the_streams_to_binary() {
+        let ir = generate_module(
+            &[Op::Output],
+            &LlvmOptions {
+                target_triple: Some("x86_64-pc-windows-msvc".to_string()),
+                ..options()
+            },
+        )
+        .expect("codegen");
+
+        assert!(ir.contains("declare i32 @_setmode(i32, i32)"));
+        assert!(ir.contains("%stdin_mode = call i32 @_setmode(i32 0, i32 32768)"));
+        assert!(ir.contains("%stdout_mode = call i32 @_setmode(i32 1, i32 32768)"));
+    }
+
+    #[test]
+    fn other_targets_leave_the_streams_alone() {
+        let ir = generate_module(&[Op::Output], &options()).expect("codegen");
+        assert!(!ir.contains("_setmode"));
+    }
+
+    #[test]
+    fn freestanding_targets_have_no_streams_to_switch() {
+        let ir = generate_module(
+            &[Op::Output],
+            &LlvmOptions {
+                target_triple: Some("x86_64-pc-windows-msvc".to_string()),
+                runtime: Runtime::Freestanding(FreestandingOptions::default()),
+                ..options()
+            },
+        )
+        .expect("codegen");
+
+        assert!(!ir.contains("_setmode"));
     }
 }
