@@ -163,6 +163,36 @@ let small: sbyte = 100;        // a constant takes the type it is given
 let mixed = small + 200;       // sint, because byte and sbyte meet there
 ```
 
+### Files and imports
+
+A program can be split across files. `import` takes a path relative to the file
+it appears in:
+
+```rust
+// main.cra
+import "lib/text.cra";
+import "lib/stats.cra";
+
+fn main() {
+    report();
+}
+```
+
+Every file is read once and its items are spliced into a single program, so two
+files importing the same third one is fine and the output is still one
+Brainfuck file. There is no runtime linking, because there is nothing on a
+Brainfuck tape to link with.
+
+Two consequences worth knowing:
+
+- **One namespace.** There are no module paths; everything an import brings in
+  is visible by its own name, and two files defining `helper` is an error.
+- **Imports come first.** A file's imports are laid out ahead of its own items,
+  which is what lets a `const` use one that an imported file defined.
+
+An import cycle is an error rather than something to untangle at run time. See
+[`examples/project`](examples/project) for a worked example.
+
 ### Declarations
 
 ```rust
@@ -348,6 +378,8 @@ cranium <input.cra> [OPTIONS]
 
 ## Limitations
 
+- Only reachable code is checked. Because every call is inlined, a function
+  nothing calls is never compiled, so a mistake inside it goes unreported.
 - No floating point.
 - Widest integer is 16 bits, signed or unsigned.
 - No recursion, function pointers, or structs.

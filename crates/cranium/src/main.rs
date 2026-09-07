@@ -1,8 +1,7 @@
 //! Command-line driver for the Cranium compiler.
 
-use cranium::codegen;
 use cranium::lexer;
-use cranium::parser;
+use cranium::module;
 use std::env;
 use std::fs;
 use std::io;
@@ -110,25 +109,32 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 }
 
 fn compile(options: &Options) -> Result<(), String> {
-    let source = fs::read_to_string(&options.input)
-        .map_err(|err| format!("cranium: cannot read {}: {err}", options.input.display()))?;
-    let name = options.input.display();
+    let name = options.input.display().to_string();
 
-    let tokens = lexer::tokenize(&source).map_err(|err| format!("{name}:{err}"))?;
     if options.emit == Emit::Tokens {
+        // Tokens are a view of one file, so imports are not followed here.
+        let source = fs::read_to_string(&options.input)
+            .map_err(|err| format!("cranium: cannot read {name}: {err}"))?;
+        let tokens = lexer::tokenize(&source, 0).map_err(|err| format!("{name}:{err}"))?;
         for token in &tokens {
-            println!("{}\t{:?}", token.span, token.tok);
+            println!("{}	{:?}", token.span, token.tok);
         }
         return Ok(());
     }
 
-    let program = parser::parse(tokens).map_err(|err| format!("{name}:{err}"))?;
     if options.emit == Emit::Ast {
-        println!("{program:#?}");
+        // The whole program, with every import already spliced in.
+        let entry = module::Disk::entry_name(&options.input);
+        let loaded = module::gather(&entry, &mut module::Disk)
+            .map_err(|failure| format!("{name}: {}", failure.error))?;
+        for file in loaded.sources.names() {
+            println!("// {file}");
+        }
+        println!("{:#?}", loaded.program);
         return Ok(());
     }
 
-    let compiled = codegen::compile(&program).map_err(|err| format!("{name}:{err}"))?;
+    let compiled = cranium::compile_file(&options.input).map_err(|err| err.to_string())?;
 
     if options.stats {
         eprintln!(
@@ -146,8 +152,7 @@ fn compile(options: &Options) -> Result<(), String> {
         }
         if compiled.cells_used > 30_000 {
             eprintln!(
-                "cranium: warning: this needs more than the usual 30,000-cell tape; \
-                 run it with `hypothalamus --tape-size {}` or `lobe --tape-size {}`",
+                "cranium: warning: this needs more than the usual 30,000-cell tape;                  run it with `hypothalamus --tape-size {}` or `lobe --tape-size {}`",
                 compiled.cells_used, compiled.cells_used
             );
         }

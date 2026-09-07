@@ -431,6 +431,13 @@ pub struct Function {
 /// A top-level item.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
+    /// `import "path";`, replaced by that file's items before compiling.
+    Import {
+        /// Path as written, relative to the file the import appears in.
+        path: String,
+        /// Where the `import` appeared.
+        span: Span,
+    },
     /// A function definition.
     Function(Function),
     /// A compile-time constant.

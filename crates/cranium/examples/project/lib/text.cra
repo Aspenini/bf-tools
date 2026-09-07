@@ -1,0 +1,20 @@
+// Text helpers, shared by anything that imports this file.
+
+const UPPER_GAP = 32;
+
+fn is_lower(c: byte) -> bool {
+    return c >= 'a' && c <= 'z';
+}
+
+fn to_upper(c: byte) -> byte {
+    if is_lower(c) {
+        return c - UPPER_GAP;
+    }
+    return c;
+}
+
+fn bar(width: byte, fill: byte) {
+    for i in 0..width {
+        putc(fill);
+    }
+}

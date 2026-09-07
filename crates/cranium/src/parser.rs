@@ -112,6 +112,17 @@ impl Parser {
 
     fn item(&mut self) -> PResult<Item> {
         let span = self.span();
+        if self.eat_keyword("import") {
+            let Tok::Str(bytes) = self.peek().clone() else {
+                return self.error("`import` needs a quoted path, as in `import \"lib.cra\";`");
+            };
+            self.advance();
+            let Ok(path) = String::from_utf8(bytes) else {
+                return self.error("import paths must be text");
+            };
+            self.expect_punct(";")?;
+            return Ok(Item::Import { path, span });
+        }
         if self.eat_keyword("fn") {
             return Ok(Item::Function(self.function(span)?));
         }
@@ -153,7 +164,7 @@ impl Parser {
             });
         }
         self.error(format!(
-            "expected `fn`, `const`, or `let` at the top level, found {}",
+            "expected `import`, `fn`, `const`, or `let` at the top level, found {}",
             self.peek()
         ))
     }
@@ -652,6 +663,7 @@ fn is_keyword(name: &str) -> bool {
         name,
         "fn" | "let"
             | "const"
+            | "import"
             | "if"
             | "else"
             | "while"
@@ -671,7 +683,7 @@ mod tests {
     use crate::lexer::tokenize;
 
     fn parse_src(src: &str) -> PResult<Program> {
-        parse(tokenize(src).expect("valid tokens"))
+        parse(tokenize(src, 0).expect("valid tokens"))
     }
 
     #[test]

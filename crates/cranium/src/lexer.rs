@@ -2,9 +2,15 @@
 
 use std::fmt;
 
-/// One-based line/column of a token.
+/// Identifies one source file. Spans stay `Copy` by holding an index rather
+/// than a path; [`crate::module::SourceMap`] turns it back into a name.
+pub type FileId = u32;
+
+/// Where something is: which file, and one-based line/column within it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
+    /// The file this position is in.
+    pub file: FileId,
     /// One-based line number.
     pub line: usize,
     /// One-based column number.
@@ -77,6 +83,7 @@ const PUNCTUATION: &[&str] = &[
 
 struct Lexer<'a> {
     src: &'a [u8],
+    file: FileId,
     index: usize,
     line: usize,
     column: usize,
@@ -86,9 +93,10 @@ struct Lexer<'a> {
 ///
 /// Line comments start with `//`, block comments are `/* ... */` and do not
 /// nest. Every other byte must belong to a token.
-pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
+pub fn tokenize(src: &str, file: FileId) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer {
         src: src.as_bytes(),
+        file,
         index: 0,
         line: 1,
         column: 1,
@@ -99,6 +107,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
 impl Lexer<'_> {
     fn span(&self) -> Span {
         Span {
+            file: self.file,
             line: self.line,
             column: self.column,
         }
@@ -347,7 +356,7 @@ mod tests {
     use super::*;
 
     fn kinds(src: &str) -> Vec<Tok> {
-        tokenize(src)
+        tokenize(src, 0)
             .expect("valid source")
             .into_iter()
             .map(|token| token.tok)
@@ -406,7 +415,7 @@ mod tests {
 
     #[test]
     fn reports_unterminated_string() {
-        let err = tokenize("\"oops").expect_err("string is unterminated");
+        let err = tokenize("\"oops", 0).expect_err("string is unterminated");
         assert!(err.message.contains("unterminated string"));
     }
 }

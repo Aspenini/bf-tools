@@ -1,6 +1,6 @@
 //! End-to-end tests: compile Cranium, run the Brainfuck, check the output.
 
-use cranium::compile_str;
+use cranium::{compile_str, module};
 use lobe::{create_runtime_with_tape, CellSize};
 
 /// Compile `source`, run it on `input`, and return what it printed.
@@ -707,7 +707,7 @@ fn reports_missing_names_and_bad_indices() {
 #[test]
 fn reports_where_the_problem_is() {
     let message = error_of("fn main() {\n    let x = 1;\n    x = nope;\n}\n");
-    assert!(message.starts_with("3:"), "{message}");
+    assert!(message.starts_with("<source>:3:"), "{message}");
 }
 
 #[test]
@@ -861,4 +861,170 @@ fn compiles_and_runs_the_examples() {
     // The blinker is horizontal on even generations and vertical on odd ones.
     assert!(life.contains("\n.......###..\n"), "{life}");
     assert!(life.contains("generation 7"), "{life}");
+}
+
+/// Compile a set of named sources, entry first, and run the result.
+fn run_project(files: &[(&str, &str)], input: &[u8]) -> String {
+    let mut loader = module::Memory::new(files.iter().copied());
+    let compiled = match cranium::compile_with(files[0].0, &mut loader) {
+        Ok(output) => output,
+        Err(err) => panic!("failed to compile: {err}"),
+    };
+    let tape = compiled.cells_used.max(30_000);
+    let mut runtime = create_runtime_with_tape(&compiled.code, CellSize::Bits8, tape)
+        .expect("cranium emits valid brainfuck");
+    let mut input = std::io::Cursor::new(input.to_vec());
+    let mut output = Vec::new();
+    runtime
+        .run_with_io(&mut input, &mut output)
+        .expect("program runs");
+    String::from_utf8(output).expect("output is text")
+}
+
+fn project_error(files: &[(&str, &str)]) -> String {
+    let mut loader = module::Memory::new(files.iter().copied());
+    cranium::compile_with(files[0].0, &mut loader)
+        .err()
+        .unwrap_or_else(|| panic!("expected a compile error"))
+        .to_string()
+}
+
+#[test]
+fn imports_pull_in_another_file() {
+    let out = run_project(
+        &[
+            (
+                "main.cra",
+                "import \"math.cra\";\nfn main() { print(square(7)); }\n",
+            ),
+            (
+                "math.cra",
+                "fn square(n: byte) -> int { return n as int * n as int; }\n",
+            ),
+        ],
+        b"",
+    );
+    assert_eq!(out, "49");
+}
+
+#[test]
+fn imports_bring_constants_globals_and_arrays() {
+    let out = run_project(
+        &[
+            (
+                "main.cra",
+                "import \"data.cra\";\nfn main() {\n print(SIZE); print(\" \");\n print(counter); print(\" \");\n puts(greeting); bump();\n print(\" \"); print(counter);\n}\n",
+            ),
+            (
+                "data.cra",
+                "const SIZE = 4;\nlet counter: int = 10;\nlet greeting: byte[8] = \"hey\";\nfn bump() { counter += SIZE as int; }\n",
+            ),
+        ],
+        b"",
+    );
+    assert_eq!(out, "4 10 hey 14");
+}
+
+/// A file's imports land ahead of its own items, so a constant defined in one
+/// is already in scope for a constant in the other.
+#[test]
+fn imported_constants_are_in_scope_for_later_ones() {
+    let out = run_project(
+        &[
+            (
+                "main.cra",
+                "import \"base.cra\";\nconst DOUBLE = BASE * 2;\nfn main() { print(DOUBLE); }\n",
+            ),
+            ("base.cra", "const BASE = 21;\n"),
+        ],
+        b"",
+    );
+    assert_eq!(out, "42");
+}
+
+/// Two files importing the same third one must not define it twice.
+#[test]
+fn a_shared_import_is_only_included_once() {
+    let out = run_project(
+        &[
+            (
+                "main.cra",
+                "import \"a.cra\";\nimport \"b.cra\";\nfn main() { print(from_a()); print(from_b()); }\n",
+            ),
+            (
+                "a.cra",
+                "import \"shared.cra\";\nfn from_a() -> byte { return shared() + 1; }\n",
+            ),
+            (
+                "b.cra",
+                "import \"shared.cra\";\nfn from_b() -> byte { return shared() + 2; }\n",
+            ),
+            ("shared.cra", "fn shared() -> byte { return 10; }\n"),
+        ],
+        b"",
+    );
+    assert_eq!(out, "1112");
+}
+
+#[test]
+fn errors_name_the_file_they_are_in() {
+    let message = project_error(&[
+        ("main.cra", "import \"lib.cra\";\nfn main() { helper(); }\n"),
+        ("lib.cra", "fn helper() {\n    let x = nope;\n}\n"),
+    ]);
+    assert!(message.starts_with("lib.cra:2:"), "{message}");
+    assert!(message.contains("not defined"), "{message}");
+}
+
+#[test]
+fn reports_import_problems() {
+    let missing = project_error(&[("main.cra", "import \"gone.cra\";\nfn main() { }\n")]);
+    assert!(missing.contains("gone.cra"), "{missing}");
+    assert!(missing.starts_with("main.cra:1:"), "{missing}");
+
+    let cycle = project_error(&[
+        ("main.cra", "import \"a.cra\";\nfn main() { }\n"),
+        ("a.cra", "import \"main.cra\";\n"),
+    ]);
+    assert!(cycle.contains("import cycle"), "{cycle}");
+
+    // One namespace across the program, so a clash is an error.
+    let clash = project_error(&[
+        (
+            "main.cra",
+            "import \"lib.cra\";\nfn helper() { }\nfn main() { }\n",
+        ),
+        ("lib.cra", "fn helper() { }\n"),
+    ]);
+    assert!(clash.contains("more than once"), "{clash}");
+}
+
+#[test]
+fn a_detached_source_cannot_import() {
+    let message = error_of("import \"lib.cra\";\nfn main() { }\n");
+    assert!(message.contains("lib.cra"), "{message}");
+}
+
+/// The multi-file example, loaded from disk through the real import
+/// resolution rather than a loader built for the test.
+#[test]
+fn compiles_the_multi_file_example() {
+    let compiled = cranium::compile_file("examples/project/main.cra")
+        .unwrap_or_else(|err| panic!("failed to compile the project: {err}"));
+
+    let tape = compiled.cells_used.max(30_000);
+    let mut runtime = create_runtime_with_tape(&compiled.code, CellSize::Bits8, tape)
+        .expect("cranium emits valid brainfuck");
+    let mut input = std::io::Cursor::new(Vec::new());
+    let mut output = Vec::new();
+    runtime
+        .run_with_io(&mut input, &mut output)
+        .expect("program runs");
+
+    assert_eq!(
+        String::from_utf8(output).expect("output is text"),
+        "CRANIUM
+count 3, mean 5 #####
+"
+    );
 }

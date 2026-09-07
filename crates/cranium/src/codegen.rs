@@ -198,7 +198,7 @@ impl<'a> Compiler<'a> {
         }
 
         let Some(main) = self.functions.get("main").copied() else {
-            return error(Span { line: 1, column: 1 }, "no `main` function");
+            return error(Span::default(), "no `main` function");
         };
         if !main.params.is_empty() {
             return error(main.span, "`main` cannot take parameters");
@@ -275,6 +275,10 @@ impl<'a> Compiler<'a> {
                         }
                         _ => self.declare(name, ty.as_ref(), init.as_ref(), *span)?,
                     }
+                }
+                // `crate::module` splices imports away before this point.
+                Item::Import { path, span } => {
+                    return error(*span, format!("unresolved import of `{path}`"))
                 }
                 Item::Function(_) => {}
             }

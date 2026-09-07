@@ -1,0 +1,23 @@
+// A Cranium project split across files.
+//
+//     cranium examples/project/main.cra --run
+//
+// `import` takes a path relative to the file it appears in. Every file is read
+// once and spliced into a single program, so this still compiles to one
+// Brainfuck file with no runtime linking of any kind.
+
+import "lib/text.cra";
+import "lib/stats.cra";
+
+fn main() {
+    let word: byte[8] = "cranium";
+    for i in 0..7 {
+        putc(to_upper(word[i]));
+    }
+    putc('\n');
+
+    record(4);
+    record(9);
+    record(2);
+    report();
+}

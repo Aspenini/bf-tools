@@ -1,0 +1,29 @@
+// Running totals. Imports `text.cra` for its bar drawing, which `main.cra`
+// also imports - the file is still only included once.
+
+import "text.cra";
+
+let count: int = 0;
+let total: int = 0;
+
+fn record(value: byte) {
+    count += 1;
+    total += value as int;
+}
+
+fn mean() -> int {
+    if count == 0 {
+        return 0;
+    }
+    return total / count;
+}
+
+fn report() {
+    print("count ");
+    print(count);
+    print(", mean ");
+    print(mean());
+    putc(' ');
+    bar(mean() as byte, '#');
+    putc('\n');
+}
