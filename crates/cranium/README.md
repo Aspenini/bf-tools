@@ -1,14 +1,14 @@
 # Cranium
 
-[![Crates.io](https://img.shields.io/crates/v/cranium.svg)](https://crates.io/crates/cranium)
-
 A small structured language that compiles to Brainfuck, so you can actually
 write programs for the runtimes in [bf-tools](https://github.com/Aspenini/bf-tools).
 
 ```bash
-cargo install cranium
-cranium hello.cra --run              # compile and run it now
-cranium hello.cra -o hello.bf        # or emit Brainfuck to compile or interpret
+# The package is `cranium-lang`; the command it installs is `cranium`.
+cargo install --git https://github.com/Aspenini/bf-tools cranium-lang
+
+cranium hello.cra --run          # compile and run it now
+cranium hello.cra -o hello.bf    # or emit Brainfuck to compile or interpret
 ```
 
 ```rust
@@ -102,7 +102,8 @@ parses an escape-sequence stream, keeps a 32x8 screen buffer with per-cell
 colour, and repaints the result.
 
 ```bash
-$ printf 'plain [1;31mBOLD RED[0m ok
+$ printf 'plain [1;31mBOLD RED[0m ok
+
 [4;12Hplaced'     | cranium examples/terminal.cra --run
 +--------------------------------+
 |plain BOLD RED ok               |

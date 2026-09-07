@@ -6,3 +6,10 @@ resolver = "2"
 authors = ["Aspenini"]
 license = "MIT"
 repository = "https://github.com/Aspenini/bf-tools"
+
+# `cranium-lang` declares its dependency on lobe by git URL, so anyone pulling
+# it in gets lobe from the same repository. Inside this workspace, resolve that
+# to the copy sitting right here, so editing `crates/lobe` takes effect without
+# a push.
+[patch."https://github.com/Aspenini/bf-tools"]
+lobe = { path = "crates/lobe" }

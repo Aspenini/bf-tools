@@ -1,11 +1,9 @@
 # Hypothalamus
 
-[![Crates.io](https://img.shields.io/crates/v/hypothalamus.svg)](https://crates.io/crates/hypothalamus)
-
 Optimizing Brainfuck AOT compiler with an LLVM IR backend.
 
 ```bash
-cargo install hypothalamus
+cargo install --git https://github.com/Aspenini/bf-tools hypothalamus
 hypothalamus hello.bf -o hello        # writes hello.exe on Windows
 hypothalamus big.bf -o big --opt-level 1   # -O2 gets slow on large programs
 ```

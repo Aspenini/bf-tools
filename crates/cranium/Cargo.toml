@@ -1,5 +1,5 @@
 [package]
-name = "cranium"
+name = "cranium-lang"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
@@ -12,7 +12,13 @@ keywords = ["brainfuck", "compiler", "language", "esolang", "cranium"]
 categories = ["command-line-utilities", "compilers"]
 
 [dependencies]
-lobe = { path = "../lobe", version = "0.1.5" }
+lobe = { git = "https://github.com/Aspenini/bf-tools" }
+
+# The package is `cranium-lang` because `cranium` is taken by an unrelated
+# crate. The library and the command keep the language's name.
+[lib]
+name = "cranium"
+path = "src/lib.rs"
 
 [[bin]]
 name = "cranium"
