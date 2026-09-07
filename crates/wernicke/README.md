@@ -11,6 +11,9 @@ It speaks the language server protocol on standard input and output, so an
 editor starts it rather than you. Point your editor's Cranium client at the
 `wernicke` binary; `--stdio` is accepted and is the default.
 
+Zed users can install the [extension](../../editors/zed) instead, which
+launches this and adds syntax highlighting.
+
 ## What it does
 
 | | |

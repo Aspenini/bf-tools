@@ -9,6 +9,9 @@ Brainfuck tooling monorepo: write real programs, then compile or interpret them.
 | [`lobe`](crates/lobe) | Interpreter |
 | [`wernicke`](crates/wernicke) | Language server for Cranium |
 
+Editor support: a [Zed extension](editors/zed) and the
+[tree-sitter grammar](editors/tree-sitter-cranium) behind it.
+
 ```bash
 cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe wernicke
 ```

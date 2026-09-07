@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/*"]
+# The Zed extension compiles to WebAssembly as a cdylib, so it is built by
+# Zed rather than as part of this workspace.
+exclude = ["editors/zed", "editors/tree-sitter-cranium"]
 resolver = "2"
 
 [workspace.package]

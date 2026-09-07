@@ -1,0 +1,14 @@
+[package]
+name = "zed-cranium"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Zed compiles extensions to WebAssembly and loads them as a component, so this
+# is a cdylib rather than a normal crate, and it is excluded from the workspace.
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+zed_extension_api = "0.7"

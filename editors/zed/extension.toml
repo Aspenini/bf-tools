@@ -1,0 +1,19 @@
+id = "cranium"
+name = "Cranium"
+description = "Cranium language support: syntax highlighting and the wernicke language server"
+version = "0.1.0"
+schema_version = 1
+authors = ["Aspenini"]
+repository = "https://github.com/Aspenini/bf-tools"
+
+[grammars.cranium]
+repository = "https://github.com/Aspenini/bf-tools"
+rev = "22cd43ae083a949145f4912c86a08c77efa0d027"
+# The grammar lives in this repository rather than one of its own. `path` is
+# not in Zed's documentation but is part of its manifest, and is how a grammar
+# in a subdirectory is found.
+path = "editors/tree-sitter-cranium"
+
+[language_servers.wernicke]
+name = "Wernicke"
+languages = ["Cranium"]
