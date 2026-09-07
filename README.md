@@ -20,14 +20,21 @@ hypothalamus life.bf -o life    # Brainfuck -> native binary
 lobe life.bf                    # or just interpret it
 ```
 
-Far enough that one of Cranium's examples is a Brainfuck interpreter, so this
-draws a Sierpinski triangle by running Brainfuck on a Brainfuck interpreter
-that is itself a compiled Brainfuck program:
+Far enough that Cranium's examples include both a Brainfuck interpreter and
+`lobotomy`, an optimizing ahead-of-time Brainfuck compiler. Compiled, each is
+itself a Brainfuck program:
 
 ```bash
+# a Brainfuck interpreter, running as Brainfuck
 cranium crates/cranium/examples/bfi.cra -o bfi.bf
 hypothalamus bfi.bf -o bfi --opt-level 1
 { cat crates/lobe/bf/sierpinski.bf; echo '!'; } | ./bfi
+
+# a Brainfuck compiler, running as Brainfuck
+cranium crates/cranium/examples/lobotomy.cra -o lobotomy.bf
+hypothalamus lobotomy.bf -o lobotomy --opt-level 1
+./lobotomy < crates/lobe/bf/sierpinski.bf > sierpinski.c
+clang -O2 sierpinski.c -o sierpinski && ./sierpinski
 ```
 
 ```rust
