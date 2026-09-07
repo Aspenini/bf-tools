@@ -136,6 +136,14 @@ fn compile(options: &Options) -> Result<(), String> {
             compiled.code.len(),
             compiled.cells_used
         );
+        // Reaching an array costs its distance from the working set, and the
+        // order below is the declaration order, so this is actionable.
+        for array in &compiled.arrays {
+            eprintln!(
+                "cranium:   {} cells away: {} ({} cells)",
+                array.base, array.name, array.cells
+            );
+        }
         if compiled.cells_used > 30_000 {
             eprintln!(
                 "cranium: warning: this needs more than the usual 30,000-cell tape; \

@@ -429,6 +429,28 @@ fn scopes_shadow_and_restore() {
     );
 }
 
+/// Arrays are laid out in declaration order, which is what lets a programmer
+/// put the array a hot loop leans on nearest to the working set.
+#[test]
+fn lays_arrays_out_in_declaration_order() {
+    let compiled = compile_str(
+        "let first: byte[8];
+let second: byte[8];
+fn main() { first[0] = 1; second[0] = 2; }
+",
+    )
+    .expect("valid program");
+    let names: Vec<&str> = compiled
+        .arrays
+        .iter()
+        .map(|array| array.name.as_str())
+        .collect();
+    assert_eq!(names, ["first", "second"]);
+    assert!(compiled.arrays[0].base < compiled.arrays[1].base);
+    // Scalars and temporaries sit below every array, never between two of them.
+    assert!(compiled.arrays[0].base > 0);
+}
+
 #[test]
 fn emits_only_brainfuck_commands() {
     let compiled = compile_str(&main_of("print(42);")).expect("valid program");
@@ -519,6 +541,20 @@ fn compiles_and_runs_the_examples() {
         sorted.contains("after:  1 3 7 9 19 23 31 42 55 64 77 88"),
         "{sorted}"
     );
+
+    // A Brainfuck interpreter, written in Cranium, running Brainfuck.
+    let bfi = include_str!("../examples/bfi.cra");
+    assert_eq!(run_with(bfi, b"++++++++[>++++++++<-]>+.!"), "A");
+    assert_eq!(
+        run_with(
+            bfi,
+            b"++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.!"
+        ),
+        "Hello World!
+"
+    );
+    assert_eq!(run_with(bfi, b",[.,]!echo me"), "echo me");
+    assert!(run_with(bfi, b"[[!").contains("unmatched"));
 
     let life = run(include_str!("../examples/life.cra"));
     assert!(life.starts_with("generation 0\n.#..........\n"), "{life}");

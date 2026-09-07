@@ -1,0 +1,114 @@
+// A Brainfuck interpreter, written in Cranium, compiled to Brainfuck.
+//
+// Feed it a program, then `!`, then that program's input:
+//
+//     echo '++++++++[>++++++++<-]>+.!' | cranium examples/bfi.cra --run
+//     => A
+//
+// It is a complete interpreter: a 256-cell wrapping tape, all eight commands,
+// and a jump table built up front so `[` and `]` are a single lookup instead of
+// a scan. Everything here is an ordinary program - the only Cranium-specific
+// move is precomputing bracket matches iteratively, since a language without a
+// call stack has no recursive descent to offer.
+
+const PROGRAM_MAX = 250;
+const NESTING_MAX = 32;
+
+let program: byte[250];
+let jump: byte[250];
+let length = 0;
+
+let tape: byte[256];
+let stack: byte[32];
+
+// Read the program up to `!` or end of input. Whatever follows `!` is left on
+// standard input for the interpreted program to read.
+fn load() {
+    loop {
+        let c = getc();
+        if c == 0 || c == '!' {
+            break;
+        }
+        if c == '>' || c == '<' || c == '+' || c == '-' {
+            program[length] = c;
+            length += 1;
+        } else if c == '.' || c == ',' || c == '[' || c == ']' {
+            program[length] = c;
+            length += 1;
+        } else {
+            // Anything else is a comment in Brainfuck.
+            continue;
+        }
+        if length == PROGRAM_MAX {
+            break;
+        }
+    }
+}
+
+// Pair up brackets once, so the run loop never has to scan for a match.
+fn link_brackets() -> bool {
+    let depth = 0;
+    for i in 0..length {
+        let c = program[i];
+        if c == '[' {
+            if depth == NESTING_MAX {
+                println("nesting too deep");
+                return false;
+            }
+            stack[depth] = i;
+            depth += 1;
+        } else if c == ']' {
+            if depth == 0 {
+                println("unmatched ]");
+                return false;
+            }
+            depth -= 1;
+            let open = stack[depth];
+            jump[open] = i;
+            jump[i] = open;
+        }
+    }
+    if depth != 0 {
+        println("unmatched [");
+        return false;
+    }
+    return true;
+}
+
+fn run() {
+    let ip = 0;
+    let dp = 0;
+    while ip < length {
+        let c = program[ip];
+        if c == '>' {
+            // The tape holds 256 cells, so a byte pointer wraps on its own.
+            dp += 1;
+        } else if c == '<' {
+            dp -= 1;
+        } else if c == '+' {
+            tape[dp] = tape[dp] + 1;
+        } else if c == '-' {
+            tape[dp] = tape[dp] - 1;
+        } else if c == '.' {
+            putc(tape[dp]);
+        } else if c == ',' {
+            tape[dp] = getc();
+        } else if c == '[' {
+            if tape[dp] == 0 {
+                ip = jump[ip];
+            }
+        } else if c == ']' {
+            if tape[dp] != 0 {
+                ip = jump[ip];
+            }
+        }
+        ip += 1;
+    }
+}
+
+fn main() {
+    load();
+    if link_brackets() {
+        run();
+    }
+}

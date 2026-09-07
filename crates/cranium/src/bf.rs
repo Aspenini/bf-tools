@@ -12,12 +12,31 @@
 /// A tape address, in cells from the start of the tape.
 pub type Addr = i64;
 
+/// Bits in one Brainfuck cell.
+pub const BITS_PER_CELL: usize = 8;
+
+/// A snapshot of both allocators, taken by [`Bf::watermark`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mark {
+    scalar: Addr,
+    array: Addr,
+}
+
 /// Emits Brainfuck while tracking the data pointer.
+///
+/// Two bump allocators share the tape. Scalars and temporaries come from the
+/// low end and arrays from `array_base` upwards, because moving a value across
+/// `d` cells costs `value * 2d` commands: putting a large array between two
+/// scalars would tax every operation on them. Keeping the working set packed
+/// together at the bottom is the single biggest thing the layout can do for
+/// speed.
 pub struct Bf {
     out: String,
     pos: Addr,
     next_free: Addr,
     peak: Addr,
+    array_next: Addr,
+    array_peak: Addr,
 }
 
 impl Default for Bf {
@@ -27,13 +46,23 @@ impl Default for Bf {
 }
 
 impl Bf {
-    /// Create an emitter positioned at cell zero with an empty tape.
+    /// Create an emitter whose arrays share the tape with everything else.
+    ///
+    /// Useful for a first pass that only needs to learn how much scalar space a
+    /// program wants; see [`Bf::with_array_base`] for the real layout.
     pub fn new() -> Self {
+        Self::with_array_base(0)
+    }
+
+    /// Create an emitter that places array regions at `array_base` and above.
+    pub fn with_array_base(array_base: Addr) -> Self {
         Self {
             out: String::new(),
             pos: 0,
             next_free: 0,
             peak: 0,
+            array_next: array_base,
+            array_peak: array_base,
         }
     }
 
@@ -44,6 +73,11 @@ impl Bf {
 
     /// Highest tape cell the program can touch.
     pub fn cells_used(&self) -> usize {
+        self.peak.max(self.array_peak) as usize
+    }
+
+    /// Cells the scalar and temporary region needs.
+    pub fn scalar_cells(&self) -> usize {
         self.peak as usize
     }
 
@@ -76,25 +110,39 @@ impl Bf {
         base
     }
 
+    /// Reserve `count` consecutive cells in the array region.
+    ///
+    /// The cells are not zeroed; callers that need a known value must write one.
+    pub fn alloc_array(&mut self, count: usize) -> Addr {
+        let base = self.array_next;
+        self.array_next += count as Addr;
+        self.array_peak = self.array_peak.max(self.array_next);
+        base
+    }
+
     /// Run `body` with a temporary allocation scope.
     ///
     /// Cells reserved inside `body` are released when it returns, so sibling
     /// regions reuse the same tape space.
     pub fn scope<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> T {
-        let mark = self.next_free;
+        let mark = self.watermark();
         let value = body(self);
-        self.next_free = mark;
+        self.release_to(mark);
         value
     }
 
-    /// The next address the allocator would hand out.
-    pub fn watermark(&self) -> Addr {
-        self.next_free
+    /// The addresses both allocators would hand out next.
+    pub fn watermark(&self) -> Mark {
+        Mark {
+            scalar: self.next_free,
+            array: self.array_next,
+        }
     }
 
-    /// Reset the allocator to a previous [`Bf::watermark`].
-    pub fn release_to(&mut self, mark: Addr) {
-        self.next_free = mark;
+    /// Reset both allocators to a previous [`Bf::watermark`].
+    pub fn release_to(&mut self, mark: Mark) {
+        self.next_free = mark.scalar;
+        self.array_next = mark.array;
     }
 
     fn push(&mut self, ch: char) {
@@ -204,11 +252,6 @@ impl Bf {
     /// Declare where the data pointer is after an [`Bf::emit_raw`] sequence.
     pub fn set_pos(&mut self, addr: Addr) {
         self.pos = addr;
-    }
-
-    /// Record that the program can reach `addr`, for tape-size reporting.
-    pub fn touch(&mut self, addr: Addr) {
-        self.peak = self.peak.max(addr + 1);
     }
 
     /// Emit `[ body ]` anchored at `addr`.
@@ -385,53 +428,62 @@ impl Bf {
         });
     }
 
+    /// Write the eight bits of `value` to `bits..bits + 8`, least significant
+    /// first, leaving `value` unchanged.
+    ///
+    /// Repeated halving costs about twice the value, which is the cheapest way
+    /// to get at a byte's structure on a tape whose only arithmetic is
+    /// increment and decrement.
+    pub fn byte_bits(&mut self, value: Addr, bits: Addr) {
+        self.scope(|bf| {
+            let rest = bf.alloc_zeroed(1);
+            bf.add_copy(value, rest);
+            for index in 0..BITS_PER_CELL as Addr {
+                let half = bf.alloc_zeroed(1);
+                bf.byte_divmod2(rest, half, bits + index);
+                bf.move_add(half, &[rest]);
+            }
+            bf.zero(rest);
+        });
+    }
+
     /// Set `out` to `1` when the byte at `lhs` is less than the byte at `rhs`.
     ///
-    /// Both operands are copied and cancelled one step at a time, so the cost
-    /// grows with the smaller operand. Equality tests are much cheaper; prefer
-    /// them where either works.
+    /// Both operands are split into bits and compared from the top down. That
+    /// costs about twice each operand's value, where cancelling the two cells
+    /// against each other one step at a time would cost their product.
     pub fn byte_lt(&mut self, out: Addr, lhs: Addr, rhs: Addr) {
         self.scope(|bf| {
-            let left = bf.alloc_zeroed(1);
-            let right = bf.alloc_zeroed(1);
-            let running = bf.alloc_zeroed(1);
-            bf.add_copy(lhs, left);
-            bf.add_copy(rhs, right);
-            bf.zero(out);
-            bf.set(running, 1);
+            let left = bf.alloc_zeroed(BITS_PER_CELL);
+            let right = bf.alloc_zeroed(BITS_PER_CELL);
+            bf.byte_bits(lhs, left);
+            bf.byte_bits(rhs, right);
 
-            bf.loop_at(running, |bf| {
-                bf.scope(|bf| {
-                    let left_empty = bf.alloc_zeroed(1);
-                    bf.is_zero(left_empty, left);
-                    bf.if_else_consume(
-                        left_empty,
+            bf.zero(out);
+            let decided = bf.alloc_zeroed(1);
+            for index in (0..BITS_PER_CELL as Addr).rev() {
+                let left_bit = left + index;
+                let right_bit = right + index;
+                bf.if_zero(decided, |bf| {
+                    // Every cell here holds 0 or 1, so these tests are cheap.
+                    bf.if_else(
+                        left_bit,
+                        |bf| bf.if_zero(right_bit, |bf| bf.set(decided, 1)),
                         |bf| {
-                            // The left operand ran out first, so `lhs < rhs`
-                            // exactly when the right operand has cells left.
-                            bf.is_nonzero(out, right);
-                            bf.zero(running);
-                        },
-                        |bf| {
-                            bf.scope(|bf| {
-                                let right_empty = bf.alloc_zeroed(1);
-                                bf.is_zero(right_empty, right);
-                                bf.if_else_consume(
-                                    right_empty,
-                                    |bf| bf.zero(running),
-                                    |bf| {
-                                        bf.add(left, -1);
-                                        bf.add(right, -1);
-                                    },
-                                );
-                            });
+                            bf.if_nonzero(right_bit, |bf| {
+                                bf.set(out, 1);
+                                bf.set(decided, 1);
+                            })
                         },
                     );
                 });
-            });
+            }
 
-            bf.zero(left);
-            bf.zero(right);
+            bf.zero(decided);
+            for index in 0..BITS_PER_CELL as Addr {
+                bf.zero(left + index);
+                bf.zero(right + index);
+            }
         });
     }
 
@@ -546,6 +598,18 @@ mod tests {
         bf.alloc(4);
         assert_eq!(before, 4);
         assert_eq!(bf.cells_used(), 20);
-        assert_eq!(bf.watermark(), 8);
+        assert_eq!(bf.watermark(), bf.watermark());
+        assert_eq!(bf.scalar_cells(), 20);
+    }
+
+    #[test]
+    fn arrays_live_above_the_scalar_region() {
+        let mut bf = Bf::with_array_base(64);
+        let scalar = bf.alloc(2);
+        let array = bf.alloc_array(100);
+        assert_eq!(scalar, 0);
+        assert_eq!(array, 64);
+        assert_eq!(bf.scalar_cells(), 2);
+        assert_eq!(bf.cells_used(), 164);
     }
 }

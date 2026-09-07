@@ -27,7 +27,7 @@ pub mod parser;
 
 use std::fmt;
 
-pub use codegen::{compile, CompileError, Output};
+pub use codegen::{compile, ArrayPlacement, CompileError, Output};
 
 /// Anything that can go wrong while compiling Cranium source.
 #[derive(Debug, Clone, PartialEq)]

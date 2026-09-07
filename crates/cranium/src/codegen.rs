@@ -20,6 +20,20 @@ use crate::num::BitKind;
 use std::collections::HashMap;
 use std::fmt;
 
+/// Where one global array ended up on the tape.
+///
+/// Reaching an array costs the distance from the working set, so this is worth
+/// looking at when a program is slower than expected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayPlacement {
+    /// The array's name.
+    pub name: String,
+    /// Cells it occupies, including indexing overhead.
+    pub cells: usize,
+    /// Address of its first element's slot.
+    pub base: usize,
+}
+
 /// A compiled program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
@@ -27,6 +41,8 @@ pub struct Output {
     pub code: String,
     /// Highest tape cell the program can reach.
     pub cells_used: usize,
+    /// Global arrays, in the order they were laid out.
+    pub arrays: Vec<ArrayPlacement>,
 }
 
 /// A lowering failure.
@@ -116,6 +132,7 @@ struct Compiler<'a> {
     returns: Vec<(Addr, Type)>,
     loop_depth: usize,
     control: Addr,
+    arrays: Vec<ArrayPlacement>,
 }
 
 /// Lower a parsed program to Brainfuck.
@@ -124,19 +141,29 @@ struct Compiler<'a> {
 ///
 /// Returns a [`CompileError`] describing the first problem found.
 pub fn compile(program: &Program) -> CResult<Output> {
-    let mut compiler = Compiler::new();
+    // Lowering runs twice. The first pass only measures how many cells the
+    // scalars and temporaries want; its output overlaps the arrays and is
+    // thrown away. The second pass then starts the arrays above that mark, so
+    // no array ever sits between two scalars. See [`Bf`] for why that matters.
+    let mut probe = Compiler::new(Bf::new());
+    probe.run(program)?;
+    let scalar_cells = probe.bf.scalar_cells() as Addr;
+
+    let mut compiler = Compiler::new(Bf::with_array_base(scalar_cells));
     compiler.run(program)?;
     let cells_used = compiler.bf.cells_used();
+    let arrays = std::mem::take(&mut compiler.arrays);
     Ok(Output {
         code: compiler.bf.finish(),
         cells_used,
+        arrays,
     })
 }
 
 impl<'a> Compiler<'a> {
-    fn new() -> Self {
+    fn new(bf: Bf) -> Self {
         Self {
-            bf: Bf::new(),
+            bf,
             functions: HashMap::new(),
             constants: HashMap::new(),
             scopes: vec![Scope::default()],
@@ -144,6 +171,7 @@ impl<'a> Compiler<'a> {
             returns: Vec::new(),
             loop_depth: 0,
             control: 0,
+            arrays: Vec::new(),
         }
     }
 
@@ -178,6 +206,34 @@ impl<'a> Compiler<'a> {
 
         self.control = self.bf.alloc_zeroed(1);
 
+        // Reserve the global arrays before anything else, in declaration
+        // order. Everything a value crosses costs its magnitude times the
+        // distance, so the first array declared is the cheapest to reach and
+        // the ordering is the programmer's to choose.
+        for item in &program.items {
+            let Item::Global {
+                name,
+                ty,
+                init,
+                span,
+            } = item
+            else {
+                continue;
+            };
+            let Some(Type::Array { element, length }) = self.global_array_type(ty, init)? else {
+                continue;
+            };
+            if !element.is_scalar() {
+                return error(*span, "arrays must hold `byte`, `int`, or `bool`");
+            }
+            let base = self.reserve_array(name, &element, length);
+            self.arrays.push(ArrayPlacement {
+                name: name.clone(),
+                cells: ArrayLayout::new(length, element.width()).region_cells(),
+                base: base as usize,
+            });
+        }
+
         for item in &program.items {
             match item {
                 Item::Const {
@@ -208,7 +264,17 @@ impl<'a> Compiler<'a> {
                     init,
                     span,
                 } => {
-                    self.declare(name, ty.as_ref(), init.as_ref(), *span)?;
+                    match self.global_array_type(ty, init)? {
+                        // The region was reserved and bound above.
+                        Some(Type::Array { element, length }) => {
+                            let base = self
+                                .lookup(name)
+                                .expect("global arrays are bound before this point")
+                                .addr;
+                            self.fill_array(name, base, &element, length, init.as_ref())?;
+                        }
+                        _ => self.declare(name, ty.as_ref(), init.as_ref(), *span)?,
+                    }
                 }
                 Item::Function(_) => {}
             }
@@ -430,12 +496,41 @@ impl<'a> Compiler<'a> {
         if !element.is_scalar() {
             return error(span, "arrays must hold `byte`, `int`, or `bool`");
         }
+        let base = self.reserve_array(name, element, length);
+        self.fill_array(name, base, element, length, init)
+    }
+
+    /// Reserve and zero an array's region, and bind `name` to it.
+    fn reserve_array(&mut self, name: &str, element: &Type, length: usize) -> Addr {
         let layout = ArrayLayout::new(length, element.width());
-        let region = self.bf.alloc(layout.region_cells());
+        let region = self.bf.alloc_array(layout.region_cells());
         for offset in 0..layout.region_cells() as Addr {
             self.bf.zero(region + offset);
         }
         let base = region + layout.base_offset();
+        self.bind(
+            name,
+            Binding {
+                addr: base,
+                ty: Type::Array {
+                    element: Box::new(element.clone()),
+                    length,
+                },
+            },
+        );
+        base
+    }
+
+    /// Write an array's initial contents into an already reserved region.
+    fn fill_array(
+        &mut self,
+        name: &str,
+        base: Addr,
+        element: &Type,
+        length: usize,
+        init: Option<&'a Expr>,
+    ) -> CResult<()> {
+        let layout = ArrayLayout::new(length, element.width());
 
         match init {
             None => {}
@@ -483,16 +578,6 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        self.bind(
-            name,
-            Binding {
-                addr: base,
-                ty: Type::Array {
-                    element: Box::new(element.clone()),
-                    length,
-                },
-            },
-        );
         Ok(())
     }
 
@@ -1505,6 +1590,31 @@ impl<'a> Compiler<'a> {
             addr,
             ty: Type::Int,
         })
+    }
+}
+
+impl Compiler<'_> {
+    /// The array type of a global, or `None` when it declares a scalar.
+    ///
+    /// This runs before any binding exists, so it only trusts what can be read
+    /// off the declaration itself.
+    fn global_array_type(
+        &self,
+        declared: &Option<Type>,
+        init: &Option<Expr>,
+    ) -> CResult<Option<Type>> {
+        if let Some(ty @ Type::Array { .. }) = declared {
+            return Ok(Some(ty.clone()));
+        }
+        if declared.is_some() {
+            return Ok(None);
+        }
+        match init {
+            Some(expr @ (Expr::Str { .. } | Expr::ArrayLit { .. })) => {
+                Ok(Some(self.type_of(expr)?))
+            }
+            _ => Ok(None),
+        }
     }
 }
 

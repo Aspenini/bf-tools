@@ -47,7 +47,14 @@ fn living_neighbours(x: byte, y: byte) -> byte {
 ```
 
 See [`examples/`](examples) for Conway's Game of Life, an expression
-calculator with real operator precedence, a bubble sort, and FizzBuzz.
+calculator with real operator precedence, a bubble sort, FizzBuzz, and a
+[Brainfuck interpreter](examples/bfi.cra) — which, compiled, is Brainfuck
+interpreting Brainfuck:
+
+```bash
+$ echo '++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.!' | cranium examples/bfi.cra --run
+Hello World!
+```
 
 ## The language
 
@@ -140,11 +147,31 @@ roughly `i²` steps and gives each element a few cells of bookkeeping rather
 than one. Prefer small arrays and constant indices in hot loops; a 12×12 grid
 is comfortable, a 200×200 one is not.
 
-**Ordering comparisons are the expensive scalar operation.** `==` and `!=` are
-cheap, but `<`, `<=`, `>`, and `>=` cancel their operands against each other,
-so comparing two large `byte` values costs more than comparing small ones.
-Multiplication and division on `int` use shift-and-add, so those stay bounded
-by the bit width.
+**Distance is what usually costs the most.** Moving a value across `d` cells
+takes roughly `value × 2d` Brainfuck commands, because the only way to move a
+value is to decrement it in one cell while incrementing another. So Cranium
+packs every scalar and temporary at the bottom of the tape and puts arrays
+above them, in **declaration order** — never letting an array sit between two
+scalars. `--stats` shows where they landed:
+
+```bash
+$ cranium bfi.cra --stats -o bfi.bf
+cranium: 339864 brainfuck commands, 3220 tape cells
+cranium:   43 cells away: program (1007 cells)
+cranium:   1050 cells away: jump (1007 cells)
+cranium:   2057 cells away: tape (1031 cells)
+cranium:   3088 cells away: stack (135 cells)
+```
+
+The first array declared is the cheapest to reach, so declare the one your
+hottest loop leans on first. It is worth measuring rather than guessing:
+whichever array is *touched* most often per iteration wins, which is not always
+the one mentioned most often in the source.
+
+Comparisons come next. `==` and `!=` are cheap; `<`, `<=`, `>`, and `>=` split
+each byte into bits, which costs about twice the operand values. Multiplication
+and division on `int` use shift-and-add, so they stay bounded by the bit width,
+and multiplying by a constant only pays for that constant's set bits.
 
 `break`, `continue`, and `return` are implemented with a single control cell
 that loops fold into their condition. Blocks that use none of those keywords
@@ -159,7 +186,9 @@ to the caller's array.
 
 ```bash
 $ cranium life.cra --stats -o life.bf
-cranium: 733021 brainfuck commands, 1224 tape cells
+cranium: 299571 brainfuck commands, 1242 tape cells
+cranium:   79 cells away: grid (583 cells)
+cranium:   662 cells away: next (583 cells)
 ```
 
 Past the traditional 30,000 cells, tell the runtime:
@@ -177,7 +206,7 @@ cranium <input.cra> [OPTIONS]
 -o, --output <PATH>   Where to write the Brainfuck (default: input with a .bf extension)
     --emit <KIND>     bf (default), tokens, or ast
 -r, --run             Run the program instead of writing it out
-    --stats           Report program size and tape usage
+    --stats           Report program size, tape usage, and array placement
 ```
 
 ## Limitations

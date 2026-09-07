@@ -8,12 +8,15 @@
 //! Costs are worth knowing when writing Cranium:
 //!
 //! - equality is linear in the operand values;
-//! - ordering (`<`, `<=`, `>`, `>=`) cancels the operands against each other,
-//!   so it is quadratic in the smaller byte of each cell pair;
+//! - ordering (`<`, `<=`, `>`, `>=`) splits each byte into bits, so it costs
+//!   about twice the operand values - more than equality, but not dramatically;
 //! - multiplication and division on `int` use shift-and-add, so they are
 //!   bounded by the bit width rather than the operand values.
+//!
+//! None of these dominate a real program the way *distance* does; see [`Bf`]
+//! for why a value's travel across the tape is what usually costs the most.
 
-use crate::bf::{Addr, Bf};
+use crate::bf::{Addr, Bf, BITS_PER_CELL};
 
 /// Which bitwise operation [`Bf::num_bitwise`] should apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,16 +259,18 @@ impl Bf {
             for index in 0..width as Addr {
                 let cell = addr + index;
                 bf.scope(|bf| {
-                    let original = bf.alloc_zeroed(1);
-                    bf.add_copy(cell, original);
-                    // Doubling wraps exactly when the top bit was set.
-                    bf.add_copy(original, cell);
-                    let next_carry = bf.alloc_zeroed(1);
-                    bf.byte_lt(next_carry, cell, original);
-                    // The doubled cell is even, so folding in the carry cannot wrap.
+                    // Splitting the cell shifts it and hands over the bit that
+                    // falls off the top in one pass.
+                    let bits = bf.alloc_zeroed(BITS_PER_CELL);
+                    bf.byte_bits(cell, bits);
+                    bf.zero(cell);
+                    for bit in 0..BITS_PER_CELL as Addr - 1 {
+                        let weight = 1 << (bit + 1);
+                        bf.if_nonzero_consume(bits + bit, |bf| bf.add(cell, weight));
+                    }
+                    // The shifted cell is even, so folding in the carry cannot wrap.
                     bf.move_add(carry, &[cell]);
-                    bf.move_add(next_carry, &[carry]);
-                    bf.zero(original);
+                    bf.move_add(bits + BITS_PER_CELL as Addr - 1, &[carry]);
                 });
             }
             bf.zero(carry_out);
@@ -389,7 +394,7 @@ impl Bf {
             bf.num_copy(lhs, shifted, width);
             bf.num_copy(rhs, multiplier, width);
 
-            for _ in 0..(width * 8) {
+            for _ in 0..(width * BITS_PER_CELL) {
                 bf.num_shr1(multiplier, width, bit);
                 bf.if_nonzero_consume(bit, |bf| bf.num_add_assign(out, shifted, width));
                 bf.num_shl1(shifted, width, discard);
@@ -407,7 +412,7 @@ impl Bf {
     /// additions and three doublings rather than a full multiply.
     pub fn num_mul_const(&mut self, out: Addr, src: Addr, width: usize, factor: u64) {
         self.num_zero(out, width);
-        let bits = width * 8;
+        let bits = width * BITS_PER_CELL;
         let factor = factor & ((1_u128 << bits) - 1) as u64;
         if factor == 0 {
             return;
@@ -459,7 +464,7 @@ impl Bf {
             let rem_carry = bf.alloc_zeroed(1);
             let discard = bf.alloc_zeroed(1);
 
-            for _ in 0..(width * 8) {
+            for _ in 0..(width * BITS_PER_CELL) {
                 bf.num_shl1(dividend, width, top_bit);
                 bf.num_shl1(remainder, width, rem_carry);
                 bf.move_add(top_bit, &[remainder]);
@@ -510,7 +515,7 @@ impl Bf {
 
     /// Store the bitwise combination of `lhs` and `rhs` in `out`.
     pub fn num_bitwise(&mut self, out: Addr, lhs: Addr, rhs: Addr, width: usize, kind: BitKind) {
-        let bit_count = width * 8;
+        let bit_count = width * BITS_PER_CELL;
         self.scope(|bf| {
             let left = bf.alloc_zeroed(width);
             let right = bf.alloc_zeroed(width);

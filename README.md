@@ -33,7 +33,9 @@ fn main() {
 ```
 
 Cranium has variables, `int` and `byte` arithmetic, arrays with runtime
-indexing, structured control flow, and functions — see its
+indexing, structured control flow, and functions — enough that one of its
+[examples](crates/cranium/examples/bfi.cra) is a Brainfuck interpreter, which
+compiles to Brainfuck interpreting Brainfuck. See its
 [README](crates/cranium#the-language) for the language and for what a tape
 without addresses or a call stack costs.
 
