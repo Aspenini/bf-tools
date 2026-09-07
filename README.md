@@ -7,9 +7,10 @@ Brainfuck tooling monorepo: write real programs, then compile or interpret them.
 | [`cranium-lang`](crates/cranium) | A structured language that compiles **to** Brainfuck |
 | [`hypothalamus`](crates/hypothalamus) | AOT compiler (LLVM) |
 | [`lobe`](crates/lobe) | Interpreter |
+| [`wernicke`](crates/wernicke) | Language server for Cranium |
 
 ```bash
-cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe
+cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe wernicke
 ```
 
 The three fit together end to end:

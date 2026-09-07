@@ -386,4 +386,7 @@ cranium <input.cra> [OPTIONS]
 - Arrays hold scalars and are not nested; lengths are literals.
 - Values wider than `int` need to be built by hand.
 
+Editor support lives in [`wernicke`](../wernicke), a language server that
+reports diagnostics by compiling your project as you type.
+
 Part of [bf-tools](https://github.com/Aspenini/bf-tools). MIT licensed.

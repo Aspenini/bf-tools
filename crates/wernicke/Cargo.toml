@@ -1,0 +1,21 @@
+[package]
+name = "wernicke"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors.workspace = true
+description = "Wernicke: a language server for the Cranium programming language"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["cranium", "lsp", "language-server", "brainfuck", "editor"]
+categories = ["development-tools", "command-line-utilities"]
+
+[dependencies]
+# The compiler itself is the analysis: diagnostics come from actually
+# compiling. Nothing else is needed - the protocol is JSON over a pipe.
+cranium-lang.workspace = true
+
+[[bin]]
+name = "wernicke"
+path = "src/main.rs"
