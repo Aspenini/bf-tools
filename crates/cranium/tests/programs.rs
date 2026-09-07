@@ -406,10 +406,168 @@ fn casts_between_scalar_types() {
 
 #[test]
 fn negates_and_inverts() {
+    // `-1` is a signed value, not a byte that wrapped to 255.
     assert_eq!(
         run(&main_of("print(-1); print(\" \"); print(!0); print(!5);")),
-        "255 10"
+        "-1 10"
     );
+}
+
+#[test]
+fn signed_arithmetic_goes_below_zero() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            let a: sint = 4;
+            let b: sint = 10;
+            print(a - b); print(" ");
+            print(a + b); print(" ");
+            print(a * -3); print(" ");
+            let small: sbyte = -5;
+            print(small); print(" ");
+            print(-small);
+            "#
+        )),
+        "-6 14 -12 -5 5"
+    );
+}
+
+/// Division truncates toward zero and the remainder follows the dividend, so
+/// `q * d + r` comes back to the dividend in every sign combination.
+#[test]
+fn signed_division_truncates_toward_zero() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            print(-7 / 2); print(" "); print(-7 % 2); print(" ");
+            print(7 / -2); print(" "); print(7 % -2); print(" ");
+            print(-7 / -2); print(" "); print(-7 % -2); print(" ");
+            print(7 / 2); print(" "); print(7 % 2);
+            "#
+        )),
+        "-3 -1 -3 1 3 -1 3 1"
+    );
+
+    assert_eq!(
+        run(&main_of(
+            "let a: sint = -1000; let b: sint = 7; print(a / b); print(\" \"); print(a % b);"
+        )),
+        "-142 -6"
+    );
+}
+
+#[test]
+fn signed_values_compare_by_sign_first() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            print(-5 < 3); print(3 < -5); print(-5 < -3); print(-3 < -5);
+            print(-5 == -5); print(-5 <= -5); print(0 > -1); print(-1 >= 0);
+            "#
+        )),
+        "10101110"
+    );
+}
+
+#[test]
+fn signed_values_reach_their_extremes() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            let lo: sint = -32768;
+            let hi: sint = 32767;
+            print(lo); print(" "); print(hi); print(" ");
+            let blo: sbyte = -128;
+            let bhi: sbyte = 127;
+            print(blo); print(" "); print(bhi); print(" "); print(0 - 0);
+            "#
+        )),
+        "-32768 32767 -128 127 0"
+    );
+}
+
+#[test]
+fn widening_a_signed_value_keeps_its_sign() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            let small: sbyte = -5;
+            let wide: sint = small;
+            print(wide); print(" ");
+            // A byte and an sbyte have no common byte-wide type, so they meet
+            // at sint rather than silently wrapping.
+            let count: byte = 200;
+            print(count + small);
+            "#
+        )),
+        "-5 195"
+    );
+}
+
+#[test]
+fn shifting_a_signed_value_right_keeps_its_sign() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            print(-8 >> 1); print(" ");
+            print(-8 >> 2); print(" ");
+            print(-1 >> 4); print(" ");
+            let n = 2;
+            print(-64 >> n); print(" ");
+            print(-3 << 2);
+            "#
+        )),
+        "-4 -2 -1 -16 -12"
+    );
+}
+
+#[test]
+fn signed_values_live_in_arrays_and_loops() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            let deltas: sint[6];
+            for i in 0..6 {
+                deltas[i] = i as sint - 3;
+            }
+            for i in 0..6 { print(deltas[i]); print(" "); }
+            let total: sint = 0;
+            for i in 0..6 { total += deltas[i]; }
+            print("sum "); print(total);
+            "#
+        )),
+        "-3 -2 -1 0 1 2 sum -3"
+    );
+}
+
+#[test]
+fn casts_convert_between_signed_and_unsigned() {
+    assert_eq!(
+        run(&main_of(
+            r#"
+            let negative: sbyte = -1;
+            print(negative as byte); print(" ");
+            print(negative as sint); print(" ");
+            let big: byte = 200;
+            print(big as sbyte); print(" ");
+            print(-5 as bool);
+            "#
+        )),
+        "255 -1 -56 1"
+    );
+}
+
+#[test]
+fn mixing_int_and_sint_needs_a_cast() {
+    let message = error_of(&main_of("let u: int = 5; let s: sint = -5; print(u + s);"));
+    assert!(message.contains("no common type"), "{message}");
+    assert!(message.contains("as"), "{message}");
+
+    let message = error_of(&main_of("let b: sbyte = 200;"));
+    assert!(message.contains("200 does not fit in `sbyte`"), "{message}");
+
+    let message = error_of(&main_of("let s: sbyte = -1; let b: byte = s;"));
+    assert!(message.contains("as byte"), "{message}");
 }
 
 #[test]

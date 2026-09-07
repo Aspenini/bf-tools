@@ -316,14 +316,43 @@ impl Bf {
 
     /// Shift the number at `addr` right by a constant number of bits.
     pub fn num_shr_const(&mut self, addr: Addr, width: usize, amount: usize) {
-        if amount >= width * 8 {
-            self.num_zero(addr, width);
+        self.num_shr_const_signed(addr, width, amount, false);
+    }
+
+    /// Shift right by a constant, keeping the sign when `arithmetic` is set.
+    pub fn num_shr_const_signed(
+        &mut self,
+        addr: Addr,
+        width: usize,
+        amount: usize,
+        arithmetic: bool,
+    ) {
+        if amount >= width * BITS_PER_CELL {
+            if !arithmetic {
+                self.num_zero(addr, width);
+                return;
+            }
+            // Shifting a negative value far enough right leaves all sign bits.
+            self.scope(|bf| {
+                let negative = bf.alloc_zeroed(1);
+                bf.num_is_negative(negative, addr, width);
+                bf.num_zero(addr, width);
+                bf.if_nonzero_consume(negative, |bf| {
+                    for offset in 0..width as Addr {
+                        bf.set(addr + offset, 255);
+                    }
+                });
+            });
             return;
         }
         self.scope(|bf| {
             let discard = bf.alloc_zeroed(1);
             for _ in 0..amount {
-                bf.num_shr1(addr, width, discard);
+                if arithmetic {
+                    bf.num_sar1(addr, width, discard);
+                } else {
+                    bf.num_shr1(addr, width, discard);
+                }
             }
             bf.zero(discard);
         });
@@ -341,6 +370,7 @@ impl Bf {
         count: Addr,
         count_width: usize,
         left: bool,
+        arithmetic: bool,
     ) {
         self.scope(|bf| {
             let remaining = bf.alloc_zeroed(count_width);
@@ -357,6 +387,8 @@ impl Bf {
                 });
                 if left {
                     bf.num_shl1(dst, width, discard);
+                } else if arithmetic {
+                    bf.num_sar1(dst, width, discard);
                 } else {
                     bf.num_shr1(dst, width, discard);
                 }
@@ -446,8 +478,8 @@ impl Bf {
 
     /// Store `lhs / rhs` in `quotient` and `lhs % rhs` in `remainder`.
     ///
-    /// Division by zero is defined rather than undefined: the quotient
-    /// saturates to the widest representable value.
+    /// Dividing by zero yields an unspecified quotient rather than hanging or
+    /// running off the tape; there is nothing here to trap with.
     pub fn num_divmod(
         &mut self,
         quotient: Addr,
@@ -574,6 +606,159 @@ impl Bf {
 
             bf.num_zero(left, width);
             bf.num_zero(right, width);
+        });
+    }
+
+    /// Replace the number at `addr` with its two's complement negation.
+    pub fn num_negate(&mut self, addr: Addr, width: usize) {
+        self.scope(|bf| {
+            let zero = bf.alloc_zeroed(width);
+            bf.num_sub_assign(zero, addr, width);
+            bf.num_copy(zero, addr, width);
+            bf.num_zero(zero, width);
+        });
+    }
+
+    /// Set `out` to `1` when the two's complement number at `addr` is negative.
+    pub fn num_is_negative(&mut self, out: Addr, addr: Addr, width: usize) {
+        let top = addr + width as Addr - 1;
+        self.scope(|bf| {
+            let bits = bf.alloc_zeroed(BITS_PER_CELL);
+            bf.byte_bits(top, bits);
+            bf.zero(out);
+            bf.move_add(bits + BITS_PER_CELL as Addr - 1, &[out]);
+            bf.num_zero(bits, BITS_PER_CELL);
+        });
+    }
+
+    /// Copy `src` into `dst`, extending with the sign rather than with zeros.
+    pub fn num_sign_extend(&mut self, src: Addr, src_width: usize, dst: Addr, dst_width: usize) {
+        if dst_width <= src_width {
+            self.num_convert(src, src_width, dst, dst_width);
+            return;
+        }
+        self.scope(|bf| {
+            // Read the sign before writing anything, in case the two overlap.
+            let negative = bf.alloc_zeroed(1);
+            bf.num_is_negative(negative, src, src_width);
+            bf.num_convert(src, src_width, dst, dst_width);
+            bf.if_nonzero_consume(negative, |bf| {
+                for offset in src_width..dst_width {
+                    bf.set(dst + offset as Addr, 255);
+                }
+            });
+        });
+    }
+
+    /// Set `out` to `1` when the signed number at `lhs` is less than `rhs`.
+    ///
+    /// Flipping the top bit of each maps two's complement order onto unsigned
+    /// order, so the unsigned comparison then answers the question directly.
+    pub fn num_signed_lt(&mut self, out: Addr, lhs: Addr, rhs: Addr, width: usize) {
+        let top = width as Addr - 1;
+        self.scope(|bf| {
+            let left = bf.alloc_zeroed(width);
+            let right = bf.alloc_zeroed(width);
+            bf.num_copy(lhs, left, width);
+            bf.num_copy(rhs, right, width);
+            bf.add(left + top, 128);
+            bf.add(right + top, 128);
+            bf.num_lt(out, left, right, width);
+            bf.num_zero(left, width);
+            bf.num_zero(right, width);
+        });
+    }
+
+    /// Set `out` to `1` when the signed `lhs` is greater than or equal to `rhs`.
+    pub fn num_signed_ge(&mut self, out: Addr, lhs: Addr, rhs: Addr, width: usize) {
+        self.scope(|bf| {
+            let less = bf.alloc_zeroed(1);
+            bf.num_signed_lt(less, lhs, rhs, width);
+            bf.is_zero(out, less);
+            bf.zero(less);
+        });
+    }
+
+    /// Shift the signed number at `addr` right by one bit, keeping its sign.
+    pub fn num_sar1(&mut self, addr: Addr, width: usize, bit_out: Addr) {
+        let top = addr + width as Addr - 1;
+        self.scope(|bf| {
+            let negative = bf.alloc_zeroed(1);
+            bf.num_is_negative(negative, addr, width);
+            bf.num_shr1(addr, width, bit_out);
+            // The vacated top bit takes the sign, so -1 stays -1.
+            bf.if_nonzero_consume(negative, |bf| bf.add(top, 128));
+        });
+    }
+
+    /// Divide signed, truncating toward zero; the remainder takes the sign of
+    /// the dividend, matching C and Rust.
+    pub fn num_signed_divmod(
+        &mut self,
+        quotient: Addr,
+        remainder: Addr,
+        lhs: Addr,
+        rhs: Addr,
+        width: usize,
+    ) {
+        self.scope(|bf| {
+            let left_negative = bf.alloc_zeroed(1);
+            let right_negative = bf.alloc_zeroed(1);
+            bf.num_is_negative(left_negative, lhs, width);
+            bf.num_is_negative(right_negative, rhs, width);
+
+            let left = bf.alloc_zeroed(width);
+            let right = bf.alloc_zeroed(width);
+            bf.num_copy(lhs, left, width);
+            bf.num_copy(rhs, right, width);
+            bf.if_nonzero(left_negative, |bf| bf.num_negate(left, width));
+            bf.if_nonzero(right_negative, |bf| bf.num_negate(right, width));
+
+            bf.num_divmod(quotient, remainder, left, right, width);
+
+            // The quotient is negative when exactly one operand was, so the
+            // two flags added together come to exactly one.
+            let flip = bf.alloc_zeroed(1);
+            bf.scope(|bf| {
+                let signs = bf.alloc_zeroed(1);
+                let one = bf.alloc_zeroed(1);
+                bf.add_copy(left_negative, signs);
+                bf.add_copy(right_negative, signs);
+                bf.set(one, 1);
+                bf.byte_eq(flip, signs, one);
+                bf.zero(one);
+                bf.zero(signs);
+            });
+            bf.if_nonzero_consume(flip, |bf| bf.num_negate(quotient, width));
+
+            // The remainder takes the sign of the dividend, so that
+            // `quotient * divisor + remainder` still comes back to the
+            // dividend. This matches C and Rust.
+            bf.if_nonzero_consume(left_negative, |bf| bf.num_negate(remainder, width));
+
+            bf.num_zero(left, width);
+            bf.num_zero(right, width);
+            bf.zero(right_negative);
+        });
+    }
+
+    /// Write the signed number at `addr` to standard output in decimal.
+    pub fn num_print_signed(&mut self, addr: Addr, width: usize) {
+        self.scope(|bf| {
+            let negative = bf.alloc_zeroed(1);
+            bf.num_is_negative(negative, addr, width);
+            let magnitude = bf.alloc_zeroed(width);
+            bf.num_copy(addr, magnitude, width);
+            let sign = bf.alloc_zeroed(1);
+            bf.if_nonzero_consume(negative, |bf| {
+                bf.write_literal(sign, b'-');
+                bf.zero(sign);
+                // Negating the most negative value leaves it unchanged, but its
+                // magnitude is exactly what the unsigned printer then reports.
+                bf.num_negate(magnitude, width);
+            });
+            bf.num_print_decimal(magnitude, width);
+            bf.num_zero(magnitude, width);
         });
     }
 
@@ -789,6 +974,103 @@ mod tests {
             bf.num_print_decimal(a, 2);
         });
         assert_eq!(shifted, (1234_u64 << 3).to_string());
+    }
+
+    #[test]
+    fn prints_signed_decimals() {
+        for value in [0_i64, 1, -1, 127, -128, 1000, -1000, 32767, -32768] {
+            let text = printed(|bf| {
+                let cell = bf.alloc_zeroed(2);
+                bf.num_set(cell, 2, value as u64 & 0xffff);
+                bf.num_print_signed(cell, 2);
+            });
+            assert_eq!(text, value.to_string());
+        }
+    }
+
+    #[test]
+    fn orders_signed_values() {
+        let cases = [
+            (0_i64, 0_i64),
+            (-1, 1),
+            (1, -1),
+            (-5, -3),
+            (-3, -5),
+            (-32768, 32767),
+            (32767, -32768),
+            (-1, -1),
+        ];
+        for (lhs, rhs) in cases {
+            let text = printed(|bf| {
+                let a = bf.alloc_zeroed(2);
+                let b = bf.alloc_zeroed(2);
+                let out = bf.alloc_zeroed(1);
+                bf.num_set(a, 2, lhs as u64 & 0xffff);
+                bf.num_set(b, 2, rhs as u64 & 0xffff);
+                bf.num_signed_lt(out, a, b, 2);
+                bf.add(out, b'0' as i32);
+                bf.write(out);
+            });
+            assert_eq!(text, u8::from(lhs < rhs).to_string(), "{lhs} < {rhs}");
+        }
+    }
+
+    #[test]
+    fn divides_signed_values_toward_zero() {
+        for (lhs, rhs) in [
+            (7_i64, 2_i64),
+            (-7, 2),
+            (7, -2),
+            (-7, -2),
+            (-1000, 7),
+            (0, 5),
+        ] {
+            let text = printed(|bf| {
+                let a = bf.alloc_zeroed(2);
+                let b = bf.alloc_zeroed(2);
+                let q = bf.alloc_zeroed(2);
+                let r = bf.alloc_zeroed(2);
+                let gap = bf.alloc_zeroed(1);
+                bf.num_set(a, 2, lhs as u64 & 0xffff);
+                bf.num_set(b, 2, rhs as u64 & 0xffff);
+                bf.num_signed_divmod(q, r, a, b, 2);
+                bf.num_print_signed(q, 2);
+                bf.write_literal(gap, b' ');
+                bf.num_print_signed(r, 2);
+            });
+            // Rust's `/` and `%` truncate toward zero, which is what this
+            // routine promises.
+            assert_eq!(
+                text,
+                format!("{} {}", lhs / rhs, lhs % rhs),
+                "{lhs} / {rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn sign_extends_and_shifts_arithmetically() {
+        for value in [0_i8, 1, -1, 127, -128, -5] {
+            let text = printed(|bf| {
+                let narrow = bf.alloc_zeroed(1);
+                let wide = bf.alloc_zeroed(2);
+                bf.num_set(narrow, 1, value as u8 as u64);
+                bf.num_sign_extend(narrow, 1, wide, 2);
+                bf.num_print_signed(wide, 2);
+            });
+            assert_eq!(text, i64::from(value).to_string(), "widening {value}");
+        }
+
+        for value in [-8_i64, -1, 8, -64, 1] {
+            let text = printed(|bf| {
+                let cell = bf.alloc_zeroed(2);
+                let discard = bf.alloc_zeroed(1);
+                bf.num_set(cell, 2, value as u64 & 0xffff);
+                bf.num_sar1(cell, 2, discard);
+                bf.num_print_signed(cell, 2);
+            });
+            assert_eq!(text, (value >> 1).to_string(), "{value} >> 1");
+        }
     }
 
     #[test]

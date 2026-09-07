@@ -126,7 +126,7 @@ impl Place {
 struct Compiler<'a> {
     bf: Bf,
     functions: HashMap<String, &'a Function>,
-    constants: HashMap<String, (Type, u64)>,
+    constants: HashMap<String, (Type, i64)>,
     scopes: Vec<Scope>,
     inlining: Vec<String>,
     returns: Vec<(Addr, Type)>,
@@ -247,7 +247,7 @@ impl<'a> Compiler<'a> {
                         return error(*span, "constants must be `byte`, `int`, or `bool`");
                     }
                     let evaluated = self.const_eval(value)?;
-                    if evaluated > declared.max_value() {
+                    if !fits(evaluated, &declared) {
                         return error(*span, format!("{evaluated} does not fit in `{declared}`"));
                     }
                     if self
@@ -348,7 +348,13 @@ impl<'a> Compiler<'a> {
                     if !item_ty.is_scalar() {
                         return error(item.span(), "array elements must be scalars");
                     }
-                    element = wider(&element, &item_ty);
+                    let Some(merged) = common_type(&element, &item_ty) else {
+                        return error(
+                            item.span(),
+                            format!("`{element}` and `{item_ty}` have no common type"),
+                        );
+                    };
+                    element = merged;
                 }
                 Type::Array {
                     element: Box::new(element),
@@ -377,27 +383,61 @@ impl<'a> Compiler<'a> {
                     None => return error(*span, format!("`{name}` is not defined")),
                 },
             },
-            Expr::Binary { op, lhs, rhs, .. } => {
+            Expr::Binary { op, lhs, rhs, span } => {
                 if op.is_comparison() || matches!(op, BinOp::And | BinOp::Or) {
                     Type::Bool
                 } else if matches!(op, BinOp::Shl | BinOp::Shr) {
                     promote(&self.type_of(lhs)?)
                 } else {
-                    wider(&promote(&self.type_of(lhs)?), &promote(&self.type_of(rhs)?))
+                    let left = self.type_of(lhs)?;
+                    let right = self.type_of(rhs)?;
+                    match common_type(&left, &right) {
+                        Some(ty) => ty,
+                        None => {
+                            return error(
+                                *span,
+                                format!(
+                                    "`{left}` and `{right}` have no common type; add an `as` cast"
+                                ),
+                            )
+                        }
+                    }
                 }
             }
             Expr::Unary { op, operand, .. } => match op {
                 UnOp::Not => Type::Bool,
-                UnOp::Neg => promote(&self.type_of(operand)?),
+                UnOp::Neg => self.negation_type(operand)?,
             },
             Expr::Cast { ty, .. } => ty.clone(),
         })
     }
 
-    fn const_eval(&self, expr: &Expr) -> CResult<u64> {
+    /// The type of `-operand`.
+    ///
+    /// A negated literal takes the narrowest signed type that holds the
+    /// result, so `-5` is an `sbyte` and `-500` an `sint`. A negated value only
+    /// known at run time widens instead, because any `byte` could be `200` and
+    /// `-200` does not fit in an `sbyte`.
+    fn negation_type(&self, operand: &Expr) -> CResult<Type> {
+        if let Ok(value) = self.const_eval(operand) {
+            let negated = -value;
+            return Ok(if fits(negated, &Type::SByte) {
+                Type::SByte
+            } else {
+                Type::SInt
+            });
+        }
+        Ok(match promote(&self.type_of(operand)?) {
+            Type::SByte => Type::SByte,
+            other if other.is_scalar() => Type::SInt,
+            other => other,
+        })
+    }
+
+    fn const_eval(&self, expr: &Expr) -> CResult<i64> {
         Ok(match expr {
-            Expr::Int { value, .. } => *value,
-            Expr::Bool { value, .. } => u64::from(*value),
+            Expr::Int { value, .. } => *value as i64,
+            Expr::Bool { value, .. } => i64::from(*value),
             Expr::Name { name, span } => match self.constants.get(name) {
                 Some((_, value)) => *value,
                 None => return error(*span, format!("`{name}` is not a compile-time constant")),
@@ -405,15 +445,15 @@ impl<'a> Compiler<'a> {
             Expr::Unary { op, operand, .. } => {
                 let value = self.const_eval(operand)?;
                 match op {
-                    UnOp::Not => u64::from(value == 0),
-                    UnOp::Neg => value.wrapping_neg() & 0xffff,
+                    UnOp::Not => i64::from(value == 0),
+                    UnOp::Neg => -value,
                 }
             }
             Expr::Cast { value, ty, .. } => {
                 let value = self.const_eval(value)?;
                 match ty {
-                    Type::Bool => u64::from(value != 0),
-                    other => value & other.max_value(),
+                    Type::Bool => i64::from(value != 0),
+                    other => reinterpret(value, other),
                 }
             }
             Expr::Binary { op, lhs, rhs, span } => {
@@ -428,14 +468,14 @@ impl<'a> Compiler<'a> {
                     }
                     BinOp::Div => left / right,
                     BinOp::Rem => left % right,
-                    BinOp::Eq => u64::from(left == right),
-                    BinOp::Ne => u64::from(left != right),
-                    BinOp::Lt => u64::from(left < right),
-                    BinOp::Le => u64::from(left <= right),
-                    BinOp::Gt => u64::from(left > right),
-                    BinOp::Ge => u64::from(left >= right),
-                    BinOp::And => u64::from(left != 0 && right != 0),
-                    BinOp::Or => u64::from(left != 0 || right != 0),
+                    BinOp::Eq => i64::from(left == right),
+                    BinOp::Ne => i64::from(left != right),
+                    BinOp::Lt => i64::from(left < right),
+                    BinOp::Le => i64::from(left <= right),
+                    BinOp::Gt => i64::from(left > right),
+                    BinOp::Ge => i64::from(left >= right),
+                    BinOp::And => i64::from(left != 0 && right != 0),
+                    BinOp::Or => i64::from(left != 0 || right != 0),
                     BinOp::BitAnd => left & right,
                     BinOp::BitOr => left | right,
                     BinOp::BitXor => left ^ right,
@@ -474,10 +514,7 @@ impl<'a> Compiler<'a> {
                 let addr = self.bf.alloc(scalar.width());
                 self.bf.num_zero(addr, scalar.width());
                 if let Some(expr) = init {
-                    let mark = self.bf.watermark();
-                    let value = self.eval(expr)?;
-                    self.store_scalar(addr, scalar, &value, expr.span())?;
-                    self.bf.release_to(mark);
+                    self.eval_into(expr, addr, scalar)?;
                 }
                 self.bind(name, Binding { addr, ty });
                 Ok(())
@@ -563,11 +600,14 @@ impl<'a> Compiler<'a> {
                 }
                 for (index, item) in elements.iter().enumerate() {
                     let value = self.const_eval(item)?;
-                    if value > element.max_value() {
+                    if !fits(value, element) {
                         return error(item.span(), format!("{value} does not fit in `{element}`"));
                     }
-                    self.bf
-                        .num_set(layout.element(base, index), element.width(), value);
+                    self.bf.num_set(
+                        layout.element(base, index),
+                        element.width(),
+                        bit_pattern(value, element),
+                    );
                 }
             }
             Some(other) => {
@@ -687,12 +727,7 @@ impl<'a> Compiler<'a> {
                     (Some(expr), Type::Unit) => {
                         return error(expr.span(), "this function does not return a value")
                     }
-                    (Some(expr), other) => {
-                        let mark = self.bf.watermark();
-                        let evaluated = self.eval(expr)?;
-                        self.store_scalar(slot, other, &evaluated, expr.span())?;
-                        self.bf.release_to(mark);
-                    }
+                    (Some(expr), other) => self.eval_into(expr, slot, other)?,
                 }
                 self.bf.set(self.control, CONTROL_RETURN);
                 Ok(())
@@ -719,10 +754,7 @@ impl<'a> Compiler<'a> {
         let inner = self.bf.watermark();
 
         match op {
-            None => {
-                let evaluated = self.eval(value)?;
-                self.store_scalar(stored, &ty, &evaluated, value.span())?;
-            }
+            None => self.eval_into(value, stored, &ty)?,
             Some(op) => {
                 let current = self.load(&place)?;
                 let combined = self.binary(op, &current, value, span)?;
@@ -813,10 +845,14 @@ impl<'a> Compiler<'a> {
         body: &'a [Stmt],
         span: Span,
     ) -> CResult<()> {
-        let ty = wider(
-            &promote(&self.type_of(start)?),
-            &promote(&self.type_of(end)?),
-        );
+        let start_ty = self.type_of(start)?;
+        let end_ty = self.type_of(end)?;
+        let Some(ty) = common_type(&start_ty, &end_ty) else {
+            return error(
+                span,
+                format!("`for` bounds `{start_ty}` and `{end_ty}` have no common type"),
+            );
+        };
         if !ty.is_scalar() {
             return error(span, "`for` bounds must be scalars");
         }
@@ -843,7 +879,11 @@ impl<'a> Compiler<'a> {
             },
         );
 
-        self.bf.num_lt(running, counter, limit, width);
+        if ty.is_signed() {
+            self.bf.num_signed_lt(running, counter, limit, width);
+        } else {
+            self.bf.num_lt(running, counter, limit, width);
+        }
         let control = self.control;
         self.bf.if_nonzero(control, |bf| bf.zero(running));
 
@@ -854,7 +894,11 @@ impl<'a> Compiler<'a> {
         result?;
         self.clear_control(CONTROL_CONTINUE);
         self.increment(counter, width);
-        self.bf.num_lt(running, counter, limit, width);
+        if ty.is_signed() {
+            self.bf.num_signed_lt(running, counter, limit, width);
+        } else {
+            self.bf.num_lt(running, counter, limit, width);
+        }
         self.bf.if_nonzero(control, |bf| bf.zero(running));
         self.bf.close_loop(running);
 
@@ -1028,15 +1072,52 @@ impl<'a> Compiler<'a> {
 
     // ---- expressions ------------------------------------------------------
 
+    /// Copy a scalar into `dst`, widening it the way its own type demands.
+    ///
+    /// A signed source extends with its sign, so `-1 as sint` stays `-1`
+    /// rather than becoming `255`.
+    fn widen(&mut self, src: Addr, src_ty: &Type, dst: Addr, dst_width: usize) {
+        if src_ty.is_signed() {
+            self.bf.num_sign_extend(src, src_ty.width(), dst, dst_width);
+        } else {
+            self.bf.num_convert(src, src_ty.width(), dst, dst_width);
+        }
+    }
+
+    /// Evaluate `expr` into `dst`, which holds a value of `dst_ty`.
+    ///
+    /// A compile-time constant is stored as `dst_ty` outright, so
+    /// `let x: sbyte = 100;` needs no cast even though `100` on its own is a
+    /// `byte`, and an out-of-range constant is reported by value rather than by
+    /// type. `bool` keeps the ordinary path, where the mismatch is better
+    /// explained as "compare with `!= 0`".
+    fn eval_into(&mut self, expr: &'a Expr, dst: Addr, dst_ty: &Type) -> CResult<()> {
+        if dst_ty.is_scalar() && !matches!(dst_ty, Type::Bool) {
+            if let Ok(value) = self.const_eval(expr) {
+                if !fits(value, dst_ty) {
+                    return error(expr.span(), format!("{value} does not fit in `{dst_ty}`"));
+                }
+                self.bf
+                    .num_set(dst, dst_ty.width(), bit_pattern(value, dst_ty));
+                return Ok(());
+            }
+        }
+        let mark = self.bf.watermark();
+        let value = self.eval(expr)?;
+        self.store_scalar(dst, dst_ty, &value, expr.span())?;
+        self.bf.release_to(mark);
+        Ok(())
+    }
+
     fn store_scalar(&mut self, dst: Addr, dst_ty: &Type, value: &Value, span: Span) -> CResult<()> {
         if matches!(dst_ty, Type::Unit) {
             return Ok(());
         }
         if !coercible(&value.ty, dst_ty) {
-            let hint = match (&value.ty, dst_ty) {
-                (Type::Int, Type::Byte) => " (add `as byte` to truncate)",
-                (Type::Byte | Type::Int, Type::Bool) => " (compare with `!= 0`)",
-                _ => "",
+            let hint = if matches!(dst_ty, Type::Bool) {
+                " (compare with `!= 0`)".to_string()
+            } else {
+                format!(" (add `as {dst_ty}` to convert)")
             };
             return error(
                 span,
@@ -1046,8 +1127,8 @@ impl<'a> Compiler<'a> {
                 ),
             );
         }
-        self.bf
-            .num_convert(value.addr, value.ty.width(), dst, dst_ty.width());
+        let value_ty = value.ty.clone();
+        self.widen(value.addr, &value_ty, dst, dst_ty.width());
         Ok(())
     }
 
@@ -1063,7 +1144,7 @@ impl<'a> Compiler<'a> {
         match expr {
             Expr::Int { value, span } => {
                 let ty = if *value <= 255 { Type::Byte } else { Type::Int };
-                if *value > ty.max_value() {
+                if *value > ty.max_value() as u64 {
                     return error(*span, format!("{value} does not fit in `int`"));
                 }
                 let addr = self.bf.alloc(ty.width());
@@ -1098,7 +1179,7 @@ impl<'a> Compiler<'a> {
                 }
                 if let Some((ty, value)) = self.constants.get(name).cloned() {
                     let addr = self.bf.alloc(ty.width());
-                    self.bf.num_set(addr, ty.width(), value);
+                    self.bf.num_set(addr, ty.width(), bit_pattern(value, &ty));
                     return Ok(Value { addr, ty });
                 }
                 error(*span, format!("`{name}` is not defined"))
@@ -1119,8 +1200,8 @@ impl<'a> Compiler<'a> {
                     self.bf
                         .num_is_nonzero(addr, evaluated.addr, evaluated.ty.width());
                 } else {
-                    self.bf
-                        .num_convert(evaluated.addr, evaluated.ty.width(), addr, ty.width());
+                    let value_ty = evaluated.ty.clone();
+                    self.widen(evaluated.addr, &value_ty, addr, ty.width());
                 }
                 Ok(Value {
                     addr,
@@ -1144,15 +1225,15 @@ impl<'a> Compiler<'a> {
                         })
                     }
                     UnOp::Neg => {
-                        let ty = promote(&evaluated.ty);
-                        if !ty.is_scalar() {
+                        if !evaluated.ty.is_scalar() {
                             return error(*span, "`-` needs a scalar");
                         }
+                        let ty = self.negation_type(operand)?;
                         let width = ty.width();
                         let addr = self.bf.alloc_zeroed(width);
                         let staged = self.bf.alloc_zeroed(width);
-                        self.bf
-                            .num_convert(evaluated.addr, evaluated.ty.width(), staged, width);
+                        let value_ty = evaluated.ty.clone();
+                        self.widen(evaluated.addr, &value_ty, staged, width);
                         self.bf.num_sub_assign(addr, staged, width);
                         Ok(Value { addr, ty })
                     }
@@ -1184,33 +1265,52 @@ impl<'a> Compiler<'a> {
             let ty = promote(&left.ty);
             let width = ty.width();
             let addr = self.bf.alloc_zeroed(width);
-            self.bf.num_convert(left.addr, left.ty.width(), addr, width);
-            if let Ok(amount) = self.const_eval(rhs) {
-                if matches!(op, BinOp::Shl) {
-                    self.bf.num_shl_const(addr, width, amount as usize);
-                } else {
-                    self.bf.num_shr_const(addr, width, amount as usize);
+            let left_ty = left.ty.clone();
+            self.widen(left.addr, &left_ty, addr, width);
+            // Shifting a signed value right keeps its sign, so `-8 >> 1` is
+            // `-4` rather than a large positive number.
+            let arithmetic = ty.is_signed();
+            match self.const_eval(rhs) {
+                Ok(amount) if amount < 0 => {
+                    return error(rhs.span(), "shift amounts cannot be negative")
                 }
-            } else {
-                self.bf.num_shift_dynamic(
+                Ok(amount) => {
+                    if matches!(op, BinOp::Shl) {
+                        self.bf.num_shl_const(addr, width, amount as usize);
+                    } else {
+                        self.bf
+                            .num_shr_const_signed(addr, width, amount as usize, arithmetic);
+                    }
+                }
+                Err(_) => self.bf.num_shift_dynamic(
                     addr,
                     width,
                     right.addr,
                     right.ty.width(),
                     matches!(op, BinOp::Shl),
-                );
+                    arithmetic,
+                ),
             }
             return Ok(Value { addr, ty });
         }
 
-        let operand_ty = wider(&promote(&left.ty), &promote(&right.ty));
+        let Some(operand_ty) = common_type(&left.ty, &right.ty) else {
+            return error(
+                span,
+                format!(
+                    "`{}` and `{}` have no common type; add an `as` cast",
+                    left.ty, right.ty
+                ),
+            );
+        };
         let width = operand_ty.width();
+        let signed = operand_ty.is_signed();
         let staged_left = self.bf.alloc_zeroed(width);
         let staged_right = self.bf.alloc_zeroed(width);
-        self.bf
-            .num_convert(left.addr, left.ty.width(), staged_left, width);
-        self.bf
-            .num_convert(right.addr, right.ty.width(), staged_right, width);
+        let left_ty = left.ty.clone();
+        let right_ty = right.ty.clone();
+        self.widen(left.addr, &left_ty, staged_left, width);
+        self.widen(right.addr, &right_ty, staged_right, width);
 
         if op.is_comparison() {
             let addr = self.bf.alloc_zeroed(1);
@@ -1220,6 +1320,22 @@ impl<'a> Compiler<'a> {
                     let same = self.bf.alloc_zeroed(1);
                     self.bf.num_eq(same, staged_left, staged_right, width);
                     self.bf.is_zero(addr, same);
+                }
+                BinOp::Lt if signed => {
+                    self.bf
+                        .num_signed_lt(addr, staged_left, staged_right, width)
+                }
+                BinOp::Gt if signed => {
+                    self.bf
+                        .num_signed_lt(addr, staged_right, staged_left, width)
+                }
+                BinOp::Le if signed => {
+                    self.bf
+                        .num_signed_ge(addr, staged_right, staged_left, width)
+                }
+                BinOp::Ge if signed => {
+                    self.bf
+                        .num_signed_ge(addr, staged_left, staged_right, width)
                 }
                 BinOp::Lt => self.bf.num_lt(addr, staged_left, staged_right, width),
                 BinOp::Gt => self.bf.num_lt(addr, staged_right, staged_left, width),
@@ -1244,18 +1360,33 @@ impl<'a> Compiler<'a> {
                 self.bf.num_copy(staged_left, addr, width);
             }
             BinOp::Mul => match self.const_eval(rhs) {
-                Ok(factor) => self.bf.num_mul_const(addr, staged_left, width, factor),
-                Err(_) => self.bf.num_mul(addr, staged_left, staged_right, width),
+                // Multiplying by a negative constant is left to the general
+                // routine, which handles the sign correctly.
+                Ok(factor) if factor >= 0 => {
+                    self.bf
+                        .num_mul_const(addr, staged_left, width, factor as u64)
+                }
+                _ => self.bf.num_mul(addr, staged_left, staged_right, width),
             },
             BinOp::Div => {
                 let remainder = self.bf.alloc_zeroed(width);
-                self.bf
-                    .num_divmod(addr, remainder, staged_left, staged_right, width);
+                if signed {
+                    self.bf
+                        .num_signed_divmod(addr, remainder, staged_left, staged_right, width);
+                } else {
+                    self.bf
+                        .num_divmod(addr, remainder, staged_left, staged_right, width);
+                }
             }
             BinOp::Rem => {
                 let quotient = self.bf.alloc_zeroed(width);
-                self.bf
-                    .num_divmod(quotient, addr, staged_left, staged_right, width);
+                if signed {
+                    self.bf
+                        .num_signed_divmod(quotient, addr, staged_left, staged_right, width);
+                } else {
+                    self.bf
+                        .num_divmod(quotient, addr, staged_left, staged_right, width);
+                }
             }
             BinOp::BitAnd => {
                 self.bf
@@ -1430,10 +1561,8 @@ impl<'a> Compiler<'a> {
         }
 
         let addr = self.bf.alloc_zeroed(param.ty.width());
-        let mark = self.bf.watermark();
-        let value = self.eval(arg)?;
-        self.store_scalar(addr, &param.ty, &value, arg.span())?;
-        self.bf.release_to(mark);
+        let param_ty = param.ty.clone();
+        self.eval_into(arg, addr, &param_ty)?;
         Ok(Binding {
             addr,
             ty: param.ty.clone(),
@@ -1453,8 +1582,12 @@ impl<'a> Compiler<'a> {
                 other => {
                     let value = self.eval(other)?;
                     match &value.ty {
-                        Type::Byte | Type::Int | Type::Bool => {
-                            self.bf.num_print_decimal(value.addr, value.ty.width());
+                        scalar if scalar.is_scalar() => {
+                            if scalar.is_signed() {
+                                self.bf.num_print_signed(value.addr, scalar.width());
+                            } else {
+                                self.bf.num_print_decimal(value.addr, scalar.width());
+                            }
                         }
                         Type::Array { element, length } if matches!(**element, Type::Byte) => {
                             let layout = ArrayLayout::new(*length, 1);
@@ -1618,6 +1751,26 @@ impl Compiler<'_> {
     }
 }
 
+/// True when `value` is representable as `ty`.
+fn fits(value: i64, ty: &Type) -> bool {
+    ty.min_value() <= value && value <= ty.max_value()
+}
+
+/// The cells a value occupies once stored as `ty`, as an unsigned pattern.
+fn bit_pattern(value: i64, ty: &Type) -> u64 {
+    (value as u64) & ty.mask()
+}
+
+/// The bit pattern a value takes on when stored as `ty`.
+fn reinterpret(value: i64, ty: &Type) -> i64 {
+    let bits = (value as u64) & ty.mask();
+    if ty.is_signed() && bits > ty.max_value() as u64 {
+        bits as i64 - (ty.mask() as i64 + 1)
+    } else {
+        bits as i64
+    }
+}
+
 /// `bool` behaves like a `byte` once it takes part in arithmetic.
 fn promote(ty: &Type) -> Type {
     match ty {
@@ -1626,24 +1779,28 @@ fn promote(ty: &Type) -> Type {
     }
 }
 
-fn wider(lhs: &Type, rhs: &Type) -> Type {
-    if matches!(lhs, Type::Int) || matches!(rhs, Type::Int) {
-        Type::Int
-    } else if lhs.is_scalar() && rhs.is_scalar() {
-        Type::Byte
-    } else {
-        lhs.clone()
+/// Every scalar type, narrowest first, for picking a common one.
+const SCALAR_LADDER: [Type; 4] = [Type::SByte, Type::Byte, Type::SInt, Type::Int];
+
+/// The narrowest type that holds every value of both operands.
+///
+/// `byte` and `sbyte` have no common type among the byte-wide ones, so they
+/// meet at `sint`. `int` and any signed type have none at all, because nothing
+/// here is wide enough; those need an explicit cast.
+fn common_type(lhs: &Type, rhs: &Type) -> Option<Type> {
+    let lhs = promote(lhs);
+    let rhs = promote(rhs);
+    if lhs == rhs {
+        return lhs.is_scalar().then_some(lhs);
     }
+    SCALAR_LADDER
+        .iter()
+        .find(|candidate| lhs.fits_in(candidate) && rhs.fits_in(candidate))
+        .cloned()
 }
 
 fn coercible(from: &Type, to: &Type) -> bool {
-    if from == to {
-        return true;
-    }
-    matches!(
-        (from, to),
-        (Type::Bool, Type::Byte | Type::Int) | (Type::Byte, Type::Int)
-    )
+    from == to || from.fits_in(to)
 }
 
 /// True when a statement can leave the control cell set for its own block.

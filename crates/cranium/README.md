@@ -104,16 +104,40 @@ int main(void) {
 | --- | --- | --- |
 | `byte` | 1 | `0..=255`, wrapping |
 | `int` | 2 | `0..=65535`, wrapping |
+| `sbyte` | 1 | `-128..=127`, wrapping |
+| `sint` | 2 | `-32768..=32767`, wrapping |
 | `bool` | 1 | `true` / `false` |
 | `T[N]` | see below | fixed-length array of scalars |
 
-All integers are unsigned. `bool` and `byte` widen to `int` on their own;
-narrowing needs a cast:
+The signed types are two's complement, so `+`, `-`, and `*` are the same
+operations as on the unsigned ones. Ordering, division, and printing know about
+the sign: division truncates toward zero and the remainder follows the
+dividend, so `q * d + r` is always `d` again, and `>>` on a signed value keeps
+its sign.
+
+Writing `-` in front of something makes it signed, which is what stops a
+subtraction from silently wrapping:
+
+```rust
+let a: sint = 4;
+print(a - 10);                 // -6
+print(-8 >> 1);                // -4
+print(-7 / 2); print(-7 % 2);  // -3 and -1
+```
+
+A value converts on its own only where every value of its type fits the
+destination, so `byte` and `sbyte` widen to `sint` but nothing narrows
+implicitly. Mixing `int` with a signed type needs an explicit cast, because
+nothing here is wide enough to hold both:
 
 ```rust
 let wide: int = 300;
 let narrow = wide as byte;     // 44
 let flag = wide as bool;       // true
+let signed = wide as sint;     // 300
+
+let small: sbyte = 100;        // a constant takes the type it is given
+let mixed = small + 200;       // sint, because byte and sbyte meet there
 ```
 
 ### Declarations
@@ -129,6 +153,7 @@ fn add(a: byte, b: byte) -> byte {
 fn main() {
     let x = 5;                 // byte, inferred
     let total: int = 0;        // explicit
+    let delta: sint = -1;      // signed
     let buffer: byte[64];      // zero-filled
     let name: byte[16] = "cranium";   // NUL-terminated
     let primes = [2, 3, 5, 7, 11];    // byte[5]
@@ -140,8 +165,12 @@ Literals up to 255 are `byte`; larger ones are `int`.
 ### Expressions
 
 `+ - * / %`, `== != < <= > >=`, `&& ||` (short-circuiting), `! -`,
-`& | ^ << >>`, and `as`. Precedence is the usual one. Division by zero
-saturates the quotient rather than trapping.
+`& | ^ << >>`, and `as`. Precedence is the usual one. On signed operands,
+ordering, `/`, `%`, and `>>` all take the sign into account.
+
+Dividing by zero yields an unspecified value rather than trapping — there is
+nothing on a Brainfuck tape to trap with — but it always terminates and never
+disturbs anything else.
 
 ### Statements
 
@@ -296,7 +325,8 @@ cranium <input.cra> [OPTIONS]
 
 ## Limitations
 
-- Unsigned only; no signed integers or floats.
+- No floating point.
+- Widest integer is 16 bits, signed or unsigned.
 - No recursion, function pointers, or structs.
 - Arrays hold scalars and are not nested; lengths are literals.
 - Values wider than `int` need to be built by hand.

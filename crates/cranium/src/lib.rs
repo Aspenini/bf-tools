@@ -1,9 +1,9 @@
 //! Cranium: a small structured language that compiles to Brainfuck.
 //!
 //! Cranium exists so that real programs can be *written* for the Brainfuck
-//! runtimes in this workspace. It has variables, arrays, arithmetic,
-//! comparisons, structured control flow, and functions, and it lowers all of
-//! that onto a flat byte tape.
+//! runtimes in this workspace. It has variables, arrays, signed and unsigned
+//! arithmetic, comparisons, structured control flow, and functions, and it
+//! lowers all of that onto a flat byte tape.
 //!
 //! ```
 //! let bf = cranium::compile_str("fn main() { print(6 * 7); }").expect("valid program");

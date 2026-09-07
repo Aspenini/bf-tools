@@ -10,6 +10,10 @@ pub enum Type {
     Byte,
     /// Unsigned 16-bit integer stored in two little-endian tape cells.
     Int,
+    /// Signed 8-bit integer, two's complement, in one tape cell.
+    SByte,
+    /// Signed 16-bit integer, two's complement, in two little-endian cells.
+    SInt,
     /// A byte restricted to `0` or `1`.
     Bool,
     /// Fixed-length array of `element` values.
@@ -30,8 +34,8 @@ impl Type {
     /// bookkeeping lanes needed for dynamic indexing.
     pub fn width(&self) -> usize {
         match self {
-            Type::Byte | Type::Bool => 1,
-            Type::Int => 2,
+            Type::Byte | Type::Bool | Type::SByte => 1,
+            Type::Int | Type::SInt => 2,
             Type::Array { element, length } => element.width() * length,
             Type::Unit => 0,
         }
@@ -39,16 +43,60 @@ impl Type {
 
     /// True for types that arithmetic and comparison operators accept.
     pub fn is_scalar(&self) -> bool {
-        matches!(self, Type::Byte | Type::Int | Type::Bool)
+        matches!(
+            self,
+            Type::Byte | Type::Int | Type::SByte | Type::SInt | Type::Bool
+        )
+    }
+
+    /// True for two's complement types, whose top bit is a sign.
+    pub fn is_signed(&self) -> bool {
+        matches!(self, Type::SByte | Type::SInt)
     }
 
     /// Largest value representable, for scalars.
-    pub fn max_value(&self) -> u64 {
+    pub fn max_value(&self) -> i64 {
         match self {
             Type::Bool => 1,
             Type::Byte => 255,
             Type::Int => 65_535,
+            Type::SByte => 127,
+            Type::SInt => 32_767,
             _ => 0,
+        }
+    }
+
+    /// Smallest value representable, for scalars.
+    pub fn min_value(&self) -> i64 {
+        match self {
+            Type::SByte => -128,
+            Type::SInt => -32_768,
+            _ => 0,
+        }
+    }
+
+    /// Mask covering every bit a value of this type occupies.
+    pub fn mask(&self) -> u64 {
+        match self.width() {
+            0 => 0,
+            width => u64::MAX >> (64 - 8 * width as u32),
+        }
+    }
+
+    /// True when every value of this type also fits in `other`.
+    pub fn fits_in(&self, other: &Type) -> bool {
+        self.is_scalar()
+            && other.is_scalar()
+            && other.min_value() <= self.min_value()
+            && self.max_value() <= other.max_value()
+    }
+
+    /// The signed type that holds this one's values, used by unary `-`.
+    pub fn signed_form(&self) -> Type {
+        match self {
+            Type::Bool | Type::Byte | Type::SByte => Type::SByte,
+            Type::Int | Type::SInt => Type::SInt,
+            other => other.clone(),
         }
     }
 }
@@ -58,6 +106,8 @@ impl fmt::Display for Type {
         match self {
             Type::Byte => write!(f, "byte"),
             Type::Int => write!(f, "int"),
+            Type::SByte => write!(f, "sbyte"),
+            Type::SInt => write!(f, "sint"),
             Type::Bool => write!(f, "bool"),
             Type::Unit => write!(f, "()"),
             Type::Array { element, length } => write!(f, "{element}[{length}]"),

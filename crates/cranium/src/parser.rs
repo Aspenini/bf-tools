@@ -201,6 +201,8 @@ impl Parser {
                 match name.as_str() {
                     "byte" => Type::Byte,
                     "int" => Type::Int,
+                    "sbyte" => Type::SByte,
+                    "sint" => Type::SInt,
                     "bool" => Type::Bool,
                     other => return self.error(format!("unknown type `{other}`")),
                 }
