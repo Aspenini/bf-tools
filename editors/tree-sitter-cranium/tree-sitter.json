@@ -1,0 +1,21 @@
+{
+  "grammars": [
+    {
+      "name": "cranium",
+      "camelcase": "Cranium",
+      "scope": "source.cranium",
+      "path": ".",
+      "file-types": ["cra"],
+      "injection-regex": "^cranium$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Cranium grammar for tree-sitter",
+    "authors": [{ "name": "Aspenini" }],
+    "links": {
+      "repository": "https://github.com/Aspenini/bf-tools"
+    }
+  }
+}

@@ -27,3 +27,9 @@ __pycache__/
 
 # Local tooling
 .codex-pet-runs/
+
+# tree-sitter build output (the generated parser itself is committed)
+node_modules/
+*.exp
+*.lib
+*.obj

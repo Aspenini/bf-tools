@@ -1,0 +1,20 @@
+{
+  "name": "tree-sitter-cranium",
+  "version": "0.1.0",
+  "description": "Cranium grammar for tree-sitter",
+  "license": "MIT",
+  "repository": "https://github.com/Aspenini/bf-tools",
+  "main": "bindings/node",
+  "keywords": ["parser", "tree-sitter", "cranium"],
+  "files": ["grammar.js", "src/**"],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.cranium",
+      "file-types": ["cra"],
+      "injection-regex": "^cranium$"
+    }
+  ]
+}
