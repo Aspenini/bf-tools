@@ -25,6 +25,10 @@ lobe life.bf                         # interpret
 hypothalamus life.bf -o life         # or compile to a native binary
 ```
 
+Programs get large, so see [compiling to a native
+binary](#compiling-to-a-native-binary) for which optimization level to reach
+for.
+
 ## A taste
 
 ```rust
@@ -179,6 +183,40 @@ pay nothing for it.
 
 Arrays passed to functions are passed by reference, so a callee writes through
 to the caller's array.
+
+## Compiling to a native binary
+
+`hypothalamus` turns the Brainfuck into a real executable, and its optimizer
+collapses whole Brainfuck loops into single instructions — which is worth a
+great deal for the loop-heavy code a compiler emits:
+
+```bash
+cranium bfi.cra -o bfi.bf
+hypothalamus bfi.bf -o bfi --opt-level 1     # writes bfi.exe on Windows
+./bfi < sierpinski.bf.txt
+```
+
+Measured on the examples here, running the same `.bf` both ways:
+
+| program | `.bf` size | `-O1` compile | native run | interpreted |
+| --- | --- | --- | --- | --- |
+| `life.cra` | 304 KB | 41 s | 0.62 s | 2.0 s |
+| `bfi.cra` running `sierpinski.bf` | 345 KB | 1.0 s | 0.25 s | 172 s |
+
+Optimization is where the win is, and it is also where the time goes: LLVM's
+optimizer is superlinear in function size, and everything a Cranium program
+does lands in one function.
+
+- **`--opt-level 0`** compiles almost instantly and runs at about interpreter
+  speed. Use it while iterating.
+- **`--opt-level 1`** is the sweet spot for finished programs, and can take
+  minutes on a program of a few hundred kilobytes.
+
+If `clang` is not on your `PATH`, point at it with `--cc`:
+
+```bash
+hypothalamus life.bf -o life --cc "C:/Program Files/LLVM/bin/clang.exe"
+```
 
 ## Tape size
 

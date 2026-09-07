@@ -394,11 +394,17 @@ impl Bf {
             bf.num_copy(lhs, shifted, width);
             bf.num_copy(rhs, multiplier, width);
 
-            for _ in 0..(width * BITS_PER_CELL) {
+            // A counted loop rather than an unrolled one: the body is identical
+            // every time, and emitting it once keeps the program small enough
+            // for an optimizing backend to chew through.
+            let steps = bf.alloc_zeroed(1);
+            bf.set(steps, (width * BITS_PER_CELL) as u8);
+            bf.loop_at(steps, |bf| {
+                bf.add(steps, -1);
                 bf.num_shr1(multiplier, width, bit);
                 bf.if_nonzero_consume(bit, |bf| bf.num_add_assign(out, shifted, width));
                 bf.num_shl1(shifted, width, discard);
-            }
+            });
 
             bf.zero(discard);
             bf.num_zero(shifted, width);
@@ -464,7 +470,11 @@ impl Bf {
             let rem_carry = bf.alloc_zeroed(1);
             let discard = bf.alloc_zeroed(1);
 
-            for _ in 0..(width * BITS_PER_CELL) {
+            // One counted pass per bit, emitted once. See [`Bf::num_mul`].
+            let steps = bf.alloc_zeroed(1);
+            bf.set(steps, (width * BITS_PER_CELL) as u8);
+            bf.loop_at(steps, |bf| {
+                bf.add(steps, -1);
                 bf.num_shl1(dividend, width, top_bit);
                 bf.num_shl1(remainder, width, rem_carry);
                 bf.move_add(top_bit, &[remainder]);
@@ -481,7 +491,7 @@ impl Bf {
                         bf.add(quotient, 1);
                     });
                 });
-            }
+            });
 
             bf.zero(discard);
             bf.num_zero(dividend, width);
