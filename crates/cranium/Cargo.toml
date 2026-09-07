@@ -12,7 +12,7 @@ keywords = ["brainfuck", "compiler", "language", "esolang", "cranium"]
 categories = ["command-line-utilities", "compilers"]
 
 [dependencies]
-lobe = { git = "https://github.com/Aspenini/bf-tools" }
+lobe.workspace = true
 
 # The package is `cranium-lang` because `cranium` is taken by an unrelated
 # crate. The library and the command keep the language's name.
