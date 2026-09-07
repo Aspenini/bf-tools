@@ -212,7 +212,7 @@ USAGE:
 
 OPTIONS:
     -o, --output <PATH>   Where to write the Brainfuck (default: input with a .bf extension)
-        --emit <KIND>     bf (default), tokens, or ast
+        --emit <KIND>     bf (default), tokens, or ast (whole program, imports included)
     -r, --run             Run the program instead of writing it out
         --stats           Report program size and tape usage
     -h, --help            Show this message

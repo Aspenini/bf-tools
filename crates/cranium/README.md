@@ -371,7 +371,7 @@ hypothalamus big.bf --tape-size 100000 -o big
 cranium <input.cra> [OPTIONS]
 
 -o, --output <PATH>   Where to write the Brainfuck (default: input with a .bf extension)
-    --emit <KIND>     bf (default), tokens, or ast
+    --emit <KIND>     bf (default), tokens, or ast (whole program, imports included)
 -r, --run             Run the program instead of writing it out
     --stats           Report program size, tape usage, and array placement
 ```
