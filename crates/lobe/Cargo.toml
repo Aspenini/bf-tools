@@ -11,10 +11,17 @@ categories = ["command-line-utilities", "parser-implementations"]
 readme = "README.md"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
+# Only the `lobe` command parses arguments. Embedders get the interpreter
+# without an argument parser by turning default features off.
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
 
 [[bin]]
 name = "lobe"
 path = "src/main.rs"
+required-features = ["cli"]
 

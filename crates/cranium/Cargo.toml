@@ -12,6 +12,8 @@ keywords = ["brainfuck", "compiler", "language", "esolang", "cranium"]
 categories = ["command-line-utilities", "compilers"]
 
 [dependencies]
+# The interpreter behind `--run`, and the tests that execute generated
+# Brainfuck to check it. The workspace takes it without its command-line half.
 lobe.workspace = true
 
 # The package is `cranium-lang` because `cranium` is taken by an unrelated

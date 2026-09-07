@@ -8,4 +8,6 @@ license = "MIT"
 repository = "https://github.com/Aspenini/bf-tools"
 
 [workspace.dependencies]
-lobe = { path = "crates/lobe" }
+# Without default features this is just the interpreter; the `cli` feature is
+# what pulls in an argument parser, and only lobe's own binary needs it.
+lobe = { path = "crates/lobe", default-features = false }
