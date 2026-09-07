@@ -42,11 +42,33 @@ impl Parser {
     }
 
     fn advance(&mut self) -> Token {
-        let token = self.tokens[self.index].clone();
-        if self.index + 1 < self.tokens.len() {
-            self.index += 1;
+        if self.index + 1 >= self.tokens.len() {
+            return self.tokens[self.index].clone();
         }
+        let span = self.tokens[self.index].span;
+        let token = std::mem::replace(
+            &mut self.tokens[self.index],
+            Token {
+                tok: Tok::Eof,
+                span,
+            },
+        );
+        self.index += 1;
         token
+    }
+
+    fn take_ident(&mut self) -> String {
+        match self.advance().tok {
+            Tok::Ident(name) => name,
+            _ => unreachable!("caller peeked an identifier"),
+        }
+    }
+
+    fn take_str(&mut self) -> Vec<u8> {
+        match self.advance().tok {
+            Tok::Str(value) => value,
+            _ => unreachable!("caller peeked a string"),
+        }
     }
 
     fn error<T>(&self, message: impl Into<String>) -> PResult<T> {
@@ -92,11 +114,8 @@ impl Parser {
     }
 
     fn expect_ident(&mut self) -> PResult<String> {
-        match self.peek().clone() {
-            Tok::Ident(name) if !is_keyword(&name) => {
-                self.advance();
-                Ok(name)
-            }
+        match self.peek() {
+            Tok::Ident(name) if !is_keyword(name) => Ok(self.take_ident()),
             Tok::Ident(name) => self.error(format!("`{name}` is a keyword and cannot be a name")),
             other => self.error(format!("expected an identifier, found {other}")),
         }
@@ -113,11 +132,10 @@ impl Parser {
     fn item(&mut self) -> PResult<Item> {
         let span = self.span();
         if self.eat_keyword("import") {
-            let Tok::Str(bytes) = self.peek().clone() else {
+            let Tok::Str(_) = self.peek() else {
                 return self.error("`import` needs a quoted path, as in `import \"lib.cra\";`");
             };
-            self.advance();
-            let Ok(path) = String::from_utf8(bytes) else {
+            let Ok(path) = String::from_utf8(self.take_str()) else {
                 return self.error("import paths must be text");
             };
             self.expect_punct(";")?;
@@ -206,27 +224,28 @@ impl Parser {
     }
 
     fn ty(&mut self) -> PResult<Type> {
-        let mut ty = match self.peek().clone() {
-            Tok::Ident(name) => {
-                self.advance();
-                match name.as_str() {
-                    "byte" => Type::Byte,
-                    "int" => Type::Int,
-                    "sbyte" => Type::SByte,
-                    "sint" => Type::SInt,
-                    "bool" => Type::Bool,
-                    other => return self.error(format!("unknown type `{other}`")),
-                }
-            }
+        let mut ty = match self.peek() {
+            Tok::Ident(_) => match self.take_ident().as_str() {
+                "byte" => Type::Byte,
+                "int" => Type::Int,
+                "sbyte" => Type::SByte,
+                "sint" => Type::SInt,
+                "bool" => Type::Bool,
+                other => return self.error(format!("unknown type `{other}`")),
+            },
             other => return self.error(format!("expected a type, found {other}")),
         };
 
         while self.at_punct("[") {
             self.advance();
-            let length = match self.peek().clone() {
+            let length = match self.peek() {
                 Tok::Int(value) => {
+                    let value = *value;
                     self.advance();
-                    value as usize
+                    let Ok(length) = usize::try_from(value) else {
+                        return self.error("array length is too large");
+                    };
+                    length
                 }
                 other => return self.error(format!("expected an array length, found {other}")),
             };
@@ -597,15 +616,16 @@ impl Parser {
 
     fn primary_expr(&mut self) -> PResult<Expr> {
         let span = self.span();
-        match self.peek().clone() {
+        match self.peek() {
             Tok::Int(value) => {
+                let value = *value;
                 self.advance();
                 Ok(Expr::Int { value, span })
             }
-            Tok::Str(value) => {
-                self.advance();
-                Ok(Expr::Str { value, span })
-            }
+            Tok::Str(_) => Ok(Expr::Str {
+                value: self.take_str(),
+                span,
+            }),
             Tok::Punct("(") => {
                 self.advance();
                 let inner = self.expr()?;
@@ -626,18 +646,16 @@ impl Parser {
                 self.expect_punct("]")?;
                 Ok(Expr::ArrayLit { elements, span })
             }
-            Tok::Ident(name) => {
-                if name == "true" || name == "false" {
-                    self.advance();
-                    return Ok(Expr::Bool {
-                        value: name == "true",
-                        span,
-                    });
-                }
-                if is_keyword(&name) {
-                    return self.error(format!("`{name}` cannot start an expression"));
-                }
+            Tok::Ident(name) if name == "true" || name == "false" => {
+                let value = name == "true";
                 self.advance();
+                Ok(Expr::Bool { value, span })
+            }
+            Tok::Ident(name) if is_keyword(name) => {
+                self.error(format!("`{name}` cannot start an expression"))
+            }
+            Tok::Ident(_) => {
+                let name = self.take_ident();
                 if self.eat_punct("(") {
                     let mut args = Vec::new();
                     if !self.at_punct(")") {

@@ -94,11 +94,7 @@ impl ArrayLayout {
 
     /// Offset of the travelling counter inside a slot.
     pub fn count(&self) -> Addr {
-        if self.flag_is_counter() {
-            self.go()
-        } else {
-            2
-        }
+        if self.flag_is_counter() { self.go() } else { 2 }
     }
 
     /// Offset of the borrow scratch lane inside a slot.
@@ -340,7 +336,7 @@ fn walk_back_body(layout: &ArrayLayout, access: Access) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lobe::{create_runtime, CellSize};
+    use lobe::{CellSize, create_runtime};
 
     fn run(src: &str) -> Vec<u8> {
         let mut runtime = create_runtime(src, CellSize::Bits8).expect("valid brainfuck");

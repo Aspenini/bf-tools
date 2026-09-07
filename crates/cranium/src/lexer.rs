@@ -190,7 +190,7 @@ impl Lexer<'_> {
                                 return Err(LexError {
                                     message: "unterminated block comment".into(),
                                     span: start,
-                                })
+                                });
                             }
                             Some(b'*') if self.peek_at(1) == Some(b'/') => {
                                 self.bump();
@@ -298,7 +298,7 @@ impl Lexer<'_> {
                     return Err(LexError {
                         message: "unterminated string literal".into(),
                         span: start,
-                    })
+                    });
                 }
                 Some(b'"') => {
                     self.bump();

@@ -1,5 +1,5 @@
 use crate::types::{Bytecode, Instr};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Parse Brainfuck source code into bytecode
 ///
@@ -34,7 +34,7 @@ pub fn parse(src: &str) -> Result<Bytecode> {
                 instrs.push(Instr::JumpIfNonZero(open_idx));
 
                 match &mut instrs[open_idx] {
-                    Instr::JumpIfZero(ref mut target) => *target = instr_idx,
+                    Instr::JumpIfZero(target) => *target = instr_idx,
                     _ => unreachable!(),
                 }
             }

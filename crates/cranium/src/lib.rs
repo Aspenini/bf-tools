@@ -33,7 +33,7 @@ pub mod parser;
 use std::fmt;
 use std::path::Path;
 
-pub use codegen::{compile, ArrayPlacement, CompileError, Output};
+pub use codegen::{ArrayPlacement, CompileError, Output, compile};
 pub use module::{Loaded, Loader, SourceMap};
 
 /// A problem in the source, located in whichever file it came from.

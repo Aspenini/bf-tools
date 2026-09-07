@@ -1,7 +1,7 @@
 //! End-to-end tests: compile Cranium, run the Brainfuck, check the output.
 
 use cranium::{compile_str, module};
-use lobe::{create_runtime_with_tape, CellSize};
+use lobe::{CellSize, create_runtime_with_tape};
 
 /// Compile `source`, run it on `input`, and return what it printed.
 fn run_with(source: &str, input: &[u8]) -> String {
@@ -27,7 +27,7 @@ fn run(source: &str) -> String {
 /// Compile once and run the result against several inputs.
 ///
 /// Worth it for the larger examples, where compiling dominates.
-fn compiled_runner(source: &str) -> impl Fn(&[u8]) -> String {
+fn compiled_runner(source: &str) -> impl Fn(&[u8]) -> String + use<> {
     let compiled = match compile_str(source) {
         Ok(output) => output,
         Err(err) => panic!("failed to compile:\n{err}"),
@@ -648,10 +648,12 @@ fn main() { first[0] = 1; second[0] = 2; }
 #[test]
 fn emits_only_brainfuck_commands() {
     let compiled = compile_str(&main_of("print(42);")).expect("valid program");
-    assert!(compiled
-        .code
-        .bytes()
-        .all(|byte| b"+-<>.,[]".contains(&byte)));
+    assert!(
+        compiled
+            .code
+            .bytes()
+            .all(|byte| b"+-<>.,[]".contains(&byte))
+    );
     let depth = compiled.code.bytes().fold(0_i64, |depth, byte| match byte {
         b'[' => depth + 1,
         b']' => depth - 1,

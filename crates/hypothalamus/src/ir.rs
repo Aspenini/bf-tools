@@ -148,10 +148,10 @@ fn flush_pending_adds(output: &mut Vec<Ir>, pending_adds: &mut BTreeMap<i64, i32
 }
 
 fn optimize_loop(body: Vec<Ir>) -> Ir {
-    if let [Ir::Move(stride)] = body.as_slice() {
-        if *stride != 0 {
-            return Ir::Scan(*stride);
-        }
+    if let [Ir::Move(stride)] = body.as_slice()
+        && *stride != 0
+    {
+        return Ir::Scan(*stride);
     }
 
     if let Some(terms) = add_mul_terms(&body) {

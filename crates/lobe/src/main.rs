@@ -1,5 +1,5 @@
 use clap::{CommandFactory, Parser, ValueEnum};
-use lobe::{create_runtime_with_tape, CellSize};
+use lobe::{CellSize, create_runtime_with_tape};
 use std::fs;
 use std::process;
 
@@ -50,26 +50,23 @@ fn main() {
     let cli = Cli::parse();
 
     // If no file is provided, print the ASCII logo and help info
-    let file = match cli.file {
-        Some(f) => f,
-        None => {
-            println!("██╗      ██████╗ ██████╗ ███████╗");
-            println!("██║     ██╔═══██╗██╔══██╗██╔════╝");
-            println!("██║     ██║   ██║██████╔╝█████╗  ");
-            println!("██║     ██║   ██║██╔══██╗██╔══╝  ");
-            println!("███████╗╚██████╔╝██████╔╝███████╗");
-            println!("╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝");
-            println!();
-            Cli::command().print_help().unwrap();
-            return;
-        }
+    let Some(file) = cli.file else {
+        println!("██╗      ██████╗ ██████╗ ███████╗");
+        println!("██║     ██╔═══██╗██╔══██╗██╔════╝");
+        println!("██║     ██║   ██║██████╔╝█████╗  ");
+        println!("██║     ██║   ██║██╔══██╗██╔══╝  ");
+        println!("███████╗╚██████╔╝██████╔╝███████╗");
+        println!("╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝");
+        println!();
+        Cli::command().print_help().unwrap();
+        return;
     };
 
     // Read the source file
     let src = match fs::read_to_string(&file) {
         Ok(content) => content,
         Err(e) => {
-            eprintln!("Error reading file '{}': {}", file, e);
+            eprintln!("Error reading file '{file}': {e}");
             process::exit(1);
         }
     };
@@ -79,13 +76,13 @@ fn main() {
     let mut runtime = match create_runtime_with_tape(&src, cell_size, cli.tape_size) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             process::exit(1);
         }
     };
 
     if let Err(e) = runtime.run() {
-        eprintln!("Runtime error: {}", e);
+        eprintln!("Runtime error: {e}");
         process::exit(1);
     }
 }

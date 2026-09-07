@@ -287,8 +287,8 @@ impl Server {
     /// The identifier the cursor is resting on, and where it starts.
     fn word_under_cursor(&self, params: &Json) -> Option<(PathBuf, String, usize)> {
         let path = document_path(params)?;
-        let line = params.path(&["position", "line"])?.as_i64()? as usize;
-        let character = params.path(&["position", "character"])?.as_i64()? as usize;
+        let line = usize::try_from(params.path(&["position", "line"])?.as_i64()?).ok()?;
+        let character = usize::try_from(params.path(&["position", "character"])?.as_i64()?).ok()?;
         let lines = self.workspace.document(&path)?;
         let column = lines.to_byte_column(line, character);
         let (word, start) = lines.word_at(line, column)?;

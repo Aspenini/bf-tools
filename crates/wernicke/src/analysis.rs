@@ -238,10 +238,10 @@ pub fn signature(function: &Function) -> String {
 
 /// What to show when hovering over `word`.
 pub fn describe(word: &str, program: Option<&Program>) -> Option<String> {
-    if let Some(program) = program {
-        if let Some(symbol) = symbols(program).into_iter().find(|s| s.name == word) {
-            return Some(symbol.detail);
-        }
+    if let Some(program) = program
+        && let Some(symbol) = symbols(program).into_iter().find(|s| s.name == word)
+    {
+        return Some(symbol.detail);
     }
     if let Some((_, help)) = BUILTINS.iter().find(|(name, _)| *name == word) {
         return Some((*help).to_string());

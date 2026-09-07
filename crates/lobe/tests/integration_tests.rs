@@ -1,4 +1,4 @@
-use lobe::{create_runtime, CellSize};
+use lobe::{CellSize, create_runtime};
 use std::io;
 
 fn run_bytes(src: &str, cell_size: CellSize, input: &[u8]) -> Vec<u8> {
@@ -101,7 +101,7 @@ fn test_output_writes_raw_bytes() {
 
 #[test]
 fn test_tape_size_is_configurable() {
-    use lobe::{create_runtime_with_tape, DEFAULT_TAPE_SIZE};
+    use lobe::{DEFAULT_TAPE_SIZE, create_runtime_with_tape};
 
     let runtime = create_runtime_with_tape("+", CellSize::Bits8, 100_000).unwrap();
     assert_eq!(runtime.tape_size(), 100_000);

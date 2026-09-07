@@ -214,7 +214,7 @@ fn clang_supports_target(triple: &str, clang_args: &[String]) -> bool {
     };
     let output = temp_dir.path().join("check.o");
 
-    let mut child = match Command::new("clang")
+    let Ok(mut child) = Command::new("clang")
         .arg(format!("--target={triple}"))
         .args(clang_args)
         .arg("-x")
@@ -227,9 +227,8 @@ fn clang_supports_target(triple: &str, clang_args: &[String]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return false,
+    else {
+        return false;
     };
 
     {

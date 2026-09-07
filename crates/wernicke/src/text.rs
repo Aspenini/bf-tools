@@ -4,6 +4,7 @@
 //! Cranium counts lines from one and columns in bytes. Files arrive as `file:`
 //! URIs rather than paths. Both conversions live here.
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Turn a `file:` URI into a path.
@@ -36,7 +37,7 @@ pub fn path_to_uri(path: &Path) -> String {
             other => {
                 let mut buffer = [0_u8; 4];
                 for byte in other.encode_utf8(&mut buffer).as_bytes() {
-                    out.push_str(&format!("%{byte:02X}"));
+                    let _ = write!(out, "%{byte:02X}");
                 }
             }
         }

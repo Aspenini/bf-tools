@@ -3,12 +3,16 @@ members = ["crates/*"]
 # The Zed extension compiles to WebAssembly as a cdylib, so it is built by
 # Zed rather than as part of this workspace.
 exclude = ["editors/zed", "editors/tree-sitter-cranium"]
-resolver = "2"
+# Edition 2024 implies resolver 3 for packages; virtual workspaces still
+# have to opt in explicitly. Resolver 3 is MSRV-aware when rust-version is set.
+resolver = "3"
 
 [workspace.package]
 authors = ["Aspenini"]
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/Aspenini/bf-tools"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Without default features this is just the interpreter; the `cli` feature is

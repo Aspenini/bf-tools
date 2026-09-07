@@ -27,10 +27,10 @@ pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Json>> {
             break;
         }
         // Header names are case-insensitive; only the length matters here.
-        if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().ok();
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().ok();
         }
     }
 

@@ -357,15 +357,19 @@ fn survives_nonsense_without_falling_over() {
     assert!(replies[0].get("error").is_some());
 
     // Notifications with missing or malformed parameters are ignored.
-    assert!(server
-        .handle(&notify("textDocument/didChange", Json::Null))
-        .is_empty());
-    assert!(server
-        .handle(&notify(
-            "textDocument/didOpen",
-            Json::object([("textDocument", Json::Null)])
-        ))
-        .is_empty());
+    assert!(
+        server
+            .handle(&notify("textDocument/didChange", Json::Null))
+            .is_empty()
+    );
+    assert!(
+        server
+            .handle(&notify(
+                "textDocument/didOpen",
+                Json::object([("textDocument", Json::Null)])
+            ))
+            .is_empty()
+    );
 
     // A message that is not a request or a known notification is ignored.
     let junk = json::parse(r#"{"jsonrpc":"2.0"}"#).expect("valid json");

@@ -5,7 +5,7 @@
 //! command to run.
 
 use zed_extension_api::{
-    self as zed, settings::LspSettings, Command, LanguageServerId, Result, Worktree,
+    self as zed, Command, LanguageServerId, Result, Worktree, settings::LspSettings,
 };
 
 /// The name of the language server binary this extension launches.
@@ -28,14 +28,14 @@ impl zed::Extension for CraniumExtension {
             .ok()
             .and_then(|settings| settings.binary);
 
-        if let Some(binary) = configured {
-            if let Some(path) = binary.path {
-                return Ok(Command {
-                    command: path,
-                    args: binary.arguments.unwrap_or_else(default_args),
-                    env: worktree.shell_env(),
-                });
-            }
+        if let Some(binary) = configured
+            && let Some(path) = binary.path
+        {
+            return Ok(Command {
+                command: path,
+                args: binary.arguments.unwrap_or_else(default_args),
+                env: worktree.shell_env(),
+            });
         }
 
         let command = worktree.which(SERVER).ok_or_else(|| {

@@ -1,7 +1,8 @@
 [package]
 name = "lobe"
 version = "0.1.5"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 description = "A fast, cross-platform Brainfuck interpreter written in Rust"
 license.workspace = true

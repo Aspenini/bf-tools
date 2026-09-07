@@ -233,9 +233,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
 
     if freestanding || (target.is_freestanding() && freestanding_symbols_configured) {
         target.set_runtime_abi(RuntimeAbi::Freestanding(FreestandingOptions {
-            entry_symbol: entry_symbol.clone(),
-            putchar_symbol: putchar_symbol.clone(),
-            getchar_symbol: getchar_symbol.clone(),
+            entry_symbol,
+            putchar_symbol,
+            getchar_symbol,
         }));
     } else if freestanding_symbols_configured {
         return Err(Error::Usage(

@@ -104,7 +104,7 @@ impl Runtime {
                     } else {
                         // Wider cells have no single-byte meaning, so they are
                         // written as decimal numbers.
-                        write!(output, "{}", value)?;
+                        write!(output, "{value}")?;
                     }
                     self.ip += 1;
                 }

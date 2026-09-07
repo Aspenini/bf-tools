@@ -278,7 +278,7 @@ impl<'a> Compiler<'a> {
                 }
                 // `crate::module` splices imports away before this point.
                 Item::Import { path, span } => {
-                    return error(*span, format!("unresolved import of `{path}`"))
+                    return error(*span, format!("unresolved import of `{path}`"));
                 }
                 Item::Function(_) => {}
             }
@@ -403,7 +403,7 @@ impl<'a> Compiler<'a> {
                                 format!(
                                     "`{left}` and `{right}` have no common type; add an `as` cast"
                                 ),
-                            )
+                            );
                         }
                     }
                 }
@@ -468,7 +468,7 @@ impl<'a> Compiler<'a> {
                     BinOp::Sub => left.wrapping_sub(right),
                     BinOp::Mul => left.wrapping_mul(right),
                     BinOp::Div | BinOp::Rem if right == 0 => {
-                        return error(*span, "constant division by zero")
+                        return error(*span, "constant division by zero");
                     }
                     BinOp::Div => left / right,
                     BinOp::Rem => left % right,
@@ -618,7 +618,7 @@ impl<'a> Compiler<'a> {
                 return error(
                     other.span(),
                     "arrays can only be initialized with a string or an array literal",
-                )
+                );
             }
         }
 
@@ -726,10 +726,10 @@ impl<'a> Compiler<'a> {
                 match (value, &ret_ty) {
                     (None, Type::Unit) => {}
                     (None, other) => {
-                        return error(*span, format!("this function must return `{other}`"))
+                        return error(*span, format!("this function must return `{other}`"));
                     }
                     (Some(expr), Type::Unit) => {
-                        return error(expr.span(), "this function does not return a value")
+                        return error(expr.span(), "this function does not return a value");
                     }
                     (Some(expr), other) => self.eval_into(expr, slot, other)?,
                 }
@@ -1096,15 +1096,16 @@ impl<'a> Compiler<'a> {
     /// type. `bool` keeps the ordinary path, where the mismatch is better
     /// explained as "compare with `!= 0`".
     fn eval_into(&mut self, expr: &'a Expr, dst: Addr, dst_ty: &Type) -> CResult<()> {
-        if dst_ty.is_scalar() && !matches!(dst_ty, Type::Bool) {
-            if let Ok(value) = self.const_eval(expr) {
-                if !fits(value, dst_ty) {
-                    return error(expr.span(), format!("{value} does not fit in `{dst_ty}`"));
-                }
-                self.bf
-                    .num_set(dst, dst_ty.width(), bit_pattern(value, dst_ty));
-                return Ok(());
+        if dst_ty.is_scalar()
+            && !matches!(dst_ty, Type::Bool)
+            && let Ok(value) = self.const_eval(expr)
+        {
+            if !fits(value, dst_ty) {
+                return error(expr.span(), format!("{value} does not fit in `{dst_ty}`"));
             }
+            self.bf
+                .num_set(dst, dst_ty.width(), bit_pattern(value, dst_ty));
+            return Ok(());
         }
         let mark = self.bf.watermark();
         let value = self.eval(expr)?;
@@ -1276,7 +1277,7 @@ impl<'a> Compiler<'a> {
             let arithmetic = ty.is_signed();
             match self.const_eval(rhs) {
                 Ok(amount) if amount < 0 => {
-                    return error(rhs.span(), "shift amounts cannot be negative")
+                    return error(rhs.span(), "shift amounts cannot be negative");
                 }
                 Ok(amount) => {
                     if matches!(op, BinOp::Shl) {
@@ -1598,7 +1599,7 @@ impl<'a> Compiler<'a> {
                             self.emit_puts(value.addr, &layout);
                         }
                         other_ty => {
-                            return error(other.span(), format!("`{other_ty}` cannot be printed"))
+                            return error(other.span(), format!("`{other_ty}` cannot be printed"));
                         }
                     }
                 }

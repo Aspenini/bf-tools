@@ -1,8 +1,8 @@
 [package]
 name = "wernicke"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
+edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 description = "Wernicke: a language server for the Cranium programming language"
 license.workspace = true

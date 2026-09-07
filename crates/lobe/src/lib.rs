@@ -4,7 +4,7 @@ mod interpreter;
 mod parser;
 mod types;
 
-pub use interpreter::{Runtime, DEFAULT_TAPE_SIZE};
+pub use interpreter::{DEFAULT_TAPE_SIZE, Runtime};
 pub use types::{Bytecode, CellSize};
 
 use anyhow::Result;

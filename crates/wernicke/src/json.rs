@@ -147,7 +147,7 @@ fn write_string(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
             // Everything below a space has to be escaped; the rest goes out as
             // UTF-8, which JSON allows.
             ch if (ch as u32) < 0x20 => write!(f, "\\u{:04x}", ch as u32)?,
-            ch => f.write_fmt(format_args!("{ch}"))?,
+            ch => write!(f, "{ch}")?,
         }
     }
     f.write_str("\"")
@@ -195,9 +195,9 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn error(&self, message: &str) -> ParseError {
+    fn error(&self, message: impl Into<String>) -> ParseError {
         ParseError {
-            message: message.to_string(),
+            message: message.into(),
             offset: self.at,
         }
     }
@@ -217,7 +217,7 @@ impl Parser<'_> {
             self.at += 1;
             Ok(())
         } else {
-            Err(self.error(&format!("expected `{}`", byte as char)))
+            Err(self.error(format!("expected `{}`", byte as char)))
         }
     }
 
@@ -240,7 +240,7 @@ impl Parser<'_> {
             Some(b'[') => self.array(),
             Some(b'{') => self.object(),
             Some(b'-' | b'0'..=b'9') => self.number(),
-            Some(byte) => Err(self.error(&format!("unexpected `{}`", byte as char))),
+            Some(byte) => Err(self.error(format!("unexpected `{}`", byte as char))),
         }
     }
 

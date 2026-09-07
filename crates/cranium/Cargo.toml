@@ -1,8 +1,8 @@
 [package]
 name = "cranium-lang"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
+edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 description = "Cranium: a small structured programming language that compiles to Brainfuck"
 license.workspace = true

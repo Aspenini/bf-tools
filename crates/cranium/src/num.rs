@@ -16,7 +16,7 @@
 //! None of these dominate a real program the way *distance* does; see [`Bf`]
 //! for why a value's travel across the tape is what usually costs the most.
 
-use crate::bf::{Addr, Bf, BITS_PER_CELL};
+use crate::bf::{Addr, BITS_PER_CELL, Bf};
 
 /// Which bitwise operation [`Bf::num_bitwise`] should apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -816,7 +816,7 @@ impl Bf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lobe::{create_runtime, CellSize};
+    use lobe::{CellSize, create_runtime};
 
     fn run(src: &str) -> Vec<u8> {
         let mut runtime = create_runtime(src, CellSize::Bits8).expect("valid brainfuck");
