@@ -24,6 +24,42 @@ fn run(source: &str) -> String {
     run_with(source, &[])
 }
 
+/// Compile once and run the result against several inputs.
+///
+/// Worth it for the larger examples, where compiling dominates.
+fn compiled_runner(source: &str) -> impl Fn(&[u8]) -> String {
+    let compiled = match compile_str(source) {
+        Ok(output) => output,
+        Err(err) => panic!("failed to compile:\n{err}"),
+    };
+    let tape = compiled.cells_used.max(30_000);
+    move |bytes: &[u8]| {
+        let mut runtime = create_runtime_with_tape(&compiled.code, CellSize::Bits8, tape)
+            .expect("cranium emits valid brainfuck");
+        let mut input = std::io::Cursor::new(bytes.to_vec());
+        let mut output = Vec::new();
+        runtime
+            .run_with_io(&mut input, &mut output)
+            .expect("program runs");
+        String::from_utf8_lossy(&output).into_owned()
+    }
+}
+
+/// Drop the SGR sequences so a screen can be compared as plain text.
+fn without_colour(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('\u{1b}') {
+        out.push_str(&rest[..start]);
+        match rest[start..].find('m') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Wrap `body` in a `main` so the tests stay readable.
 fn main_of(body: &str) -> String {
     format!("fn main() {{\n{body}\n}}\n")
@@ -672,6 +708,76 @@ fn reports_missing_names_and_bad_indices() {
 fn reports_where_the_problem_is() {
     let message = error_of("fn main() {\n    let x = 1;\n    x = nope;\n}\n");
     assert!(message.starts_with("3:"), "{message}");
+}
+
+#[test]
+fn emulates_a_terminal() {
+    let screen = compiled_runner(include_str!("../examples/terminal.cra"));
+    let row = |text: &str, index: usize| -> String {
+        without_colour(text)
+            .lines()
+            .nth(index)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // Printable text lands at the cursor, inside a drawn frame.
+    let plain = screen(b"hello");
+    assert_eq!(row(&plain, 0), "+--------------------------------+");
+    assert_eq!(row(&plain, 1), "|hello                           |");
+    assert!(plain.contains("cursor: row 1, col 6"), "{plain}");
+
+    // CSI H places the cursor absolutely, counting from one.
+    assert_eq!(
+        row(&screen(b"\x1b[3;5Hhi"), 3),
+        "|    hi                          |"
+    );
+
+    // Backspace moves without erasing; overwriting is what erases.
+    assert_eq!(
+        row(&screen(b"back\x08\x08\x08BACK"), 1),
+        "|bBACK                           |"
+    );
+
+    // A tab advances to the next multiple of eight.
+    assert_eq!(
+        row(&screen(b"ab\tc"), 1),
+        "|ab      c                       |"
+    );
+
+    // Erase to end of line, and erase the whole display.
+    assert_eq!(
+        row(&screen(b"ABCDEFGHIJ\x1b[1;5H\x1b[K"), 1),
+        "|ABCD                            |"
+    );
+    assert_eq!(
+        row(&screen(b"junk\x1b[2J\x1b[1;1Hclean"), 1),
+        "|clean                           |"
+    );
+
+    // The cursor can be saved and restored around a jump.
+    assert_eq!(
+        row(&screen(b"A\x1b[s\x1b[5;20HB\x1b[uC"), 1),
+        "|AC                              |"
+    );
+
+    // Writing past the last column wraps onto the next row.
+    let wrapped = screen(&[b'x'; 35]);
+    assert_eq!(row(&wrapped, 1), "|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|");
+    assert_eq!(row(&wrapped, 2), "|xxx                             |");
+
+    // A ninth line scrolls the first one off the top.
+    let scrolled = screen(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9");
+    assert_eq!(row(&scrolled, 1), "|2                               |");
+    assert_eq!(row(&scrolled, 8), "|9                               |");
+
+    // SGR is tracked per cell and re-emitted only where the colour changes.
+    let coloured = screen(b"ab\x1b[1;31mcd\x1b[0mef");
+    assert!(
+        coloured.contains("\u{1b}[0;37mab\u{1b}[1;31mcd\u{1b}[0;37mef"),
+        "{coloured}"
+    );
+    assert_eq!(row(&coloured, 1), "|abcdef                          |");
 }
 
 #[test]

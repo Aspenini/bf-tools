@@ -52,6 +52,7 @@ fn living_neighbours(x: byte, y: byte) -> byte {
 
 See [`examples/`](examples) for Conway's Game of Life, an expression
 calculator with real operator precedence, a bubble sort, FizzBuzz, a
+[VT100 terminal emulator](examples/terminal.cra), a
 [Brainfuck interpreter](examples/bfi.cra), and
 [`lobotomy`](examples/lobotomy.cra) — an optimizing ahead-of-time Brainfuck
 compiler:
@@ -95,6 +96,27 @@ int main(void) {
     return 0;
 }
 ```
+
+[`terminal.cra`](examples/terminal.cra) is a VT100/ANSI emulator core: it
+parses an escape-sequence stream, keeps a 32x8 screen buffer with per-cell
+colour, and repaints the result.
+
+```bash
+$ printf 'plain [1;31mBOLD RED[0m ok
+[4;12Hplaced'     | cranium examples/terminal.cra --run
++--------------------------------+
+|plain BOLD RED ok               |
+|                                |
+|                                |
+|           placed               |
+...
+```
+
+It cannot do the other half of a terminal emulator — allocating a pseudo
+terminal, spawning a shell, drawing a window — because Brainfuck's whole
+interface is one byte in and one byte out, with no syscall to reach for.
+Everything between those two ends is there: cursor motion, absolute
+positioning, erase, SGR, tabs, wrapping and scrolling.
 
 ## The language
 

@@ -1,0 +1,342 @@
+// A VT100/ANSI terminal emulator core, written in Cranium.
+//
+// It reads a byte stream on standard input - the kind of thing a shell writes -
+// interprets the control characters and CSI escape sequences in it, maintains a
+// 32x8 screen buffer with per-cell colour, and paints the resulting screen.
+//
+//     printf 'plain \033[1;31mBOLD RED\033[0m\n\033[4;12Hplaced here' \
+//       | cranium examples/terminal.cra --run
+//
+// What a real terminal emulator does that this cannot: allocate a pseudo
+// terminal, spawn a shell into it, and put glyphs on a window. Brainfuck has
+// exactly two I/O operations - read a byte, write a byte - so there is no
+// syscall to reach for. Everything between those two ends is here.
+//
+// In exchange it is portable in a way no real terminal emulator is: it compiles
+// to Brainfuck, so the same program runs on any Brainfuck runtime on any OS.
+//
+// Supported: BS, TAB, LF, CR; CSI A/B/C/D (cursor motion), H and f (absolute
+// position), J and K (erase), m (SGR: reset, bold, 30-37 and 39), s and u
+// (save and restore cursor). Line wrap and scrolling are handled.
+
+const COLS = 32;
+const ROWS = 8;
+const CELLS = 256;
+const LAST_ROW_START = 224; // CELLS - COLS
+
+const BLANK = 32; // space
+const DEFAULT_ATTR = 7; // white, not bold
+
+// Set to false for a host terminal that does not understand ANSI colour.
+const USE_COLOUR = true;
+
+// Parser states.
+const GROUND = 0;
+const AFTER_ESC = 1;
+const IN_CSI = 2;
+
+// One byte per cell. `screen` is read and written far more often than
+// `attrs`, so it is declared first and gets the cheaper spot on the tape.
+let screen: byte[256];
+let attrs: byte[256];
+
+let cur_row = 0;
+let cur_col = 0;
+let saved_row = 0;
+let saved_col = 0;
+let attr = DEFAULT_ATTR;
+
+let state = GROUND;
+let param0 = 0;
+let param1 = 0;
+let param_index = 0;
+let have_param = false;
+
+// Work requested by the current byte, carried out once at the end of `feed`.
+// Routing it through a single place keeps one inlined copy of each of these
+// rather than one per call site, which matters a lot for program size.
+let pending_scroll = false;
+let erase_lo: int = 0;
+let erase_hi: int = 0;
+
+fn fill(from: int, to: int) {
+    for i in from..to {
+        screen[i] = BLANK;
+        attrs[i] = DEFAULT_ATTR;
+    }
+}
+
+fn scroll_up() {
+    for i in 0..LAST_ROW_START {
+        screen[i] = screen[i + COLS];
+        attrs[i] = attrs[i + COLS];
+    }
+    for i in LAST_ROW_START..CELLS {
+        screen[i] = BLANK;
+        attrs[i] = DEFAULT_ATTR;
+    }
+}
+
+fn line_feed() {
+    cur_row += 1;
+    if cur_row >= ROWS {
+        cur_row = ROWS - 1;
+        pending_scroll = true;
+    }
+}
+
+fn apply_sgr(value: byte) {
+    let bold = 0;
+    if attr >= 8 {
+        bold = 8;
+    }
+    if value == 0 {
+        attr = DEFAULT_ATTR;
+    } else if value == 1 {
+        attr = (attr % 8) + 8;
+    } else if value == 22 {
+        attr = attr % 8;
+    } else if value >= 30 && value <= 37 {
+        attr = (value - 30) + bold;
+    } else if value == 39 {
+        attr = DEFAULT_ATTR % 8 + bold;
+    }
+}
+
+fn handle_csi(final: byte) {
+    // A missing parameter means one for cursor motion, zero for erase.
+    let n = param0;
+    if !have_param {
+        n = 1;
+    }
+
+    if final == 'A' {
+        if cur_row > n {
+            cur_row -= n;
+        } else {
+            cur_row = 0;
+        }
+    } else if final == 'B' {
+        cur_row += n;
+        if cur_row >= ROWS {
+            cur_row = ROWS - 1;
+        }
+    } else if final == 'C' {
+        cur_col += n;
+        if cur_col >= COLS {
+            cur_col = COLS - 1;
+        }
+    } else if final == 'D' {
+        if cur_col > n {
+            cur_col -= n;
+        } else {
+            cur_col = 0;
+        }
+    } else if final == 'H' || final == 'f' {
+        // Rows and columns are one-based on the wire, zero-based here.
+        let row = 1;
+        let col = 1;
+        if have_param {
+            row = param0;
+            if param_index >= 1 {
+                col = param1;
+            }
+        }
+        if row == 0 {
+            row = 1;
+        }
+        if col == 0 {
+            col = 1;
+        }
+        cur_row = row - 1;
+        cur_col = col - 1;
+        if cur_row >= ROWS {
+            cur_row = ROWS - 1;
+        }
+        if cur_col >= COLS {
+            cur_col = COLS - 1;
+        }
+    } else if final == 'J' {
+        let here = cur_row as int * COLS as int + cur_col as int;
+        if !have_param {
+            n = 0;
+        }
+        if n == 0 {
+            erase_lo = here;
+            erase_hi = CELLS;
+        } else if n == 1 {
+            erase_lo = 0;
+            erase_hi = here + 1;
+        } else if n == 2 {
+            erase_lo = 0;
+            erase_hi = CELLS;
+        }
+    } else if final == 'K' {
+        let start = cur_row as int * COLS as int;
+        let here = start + cur_col as int;
+        if !have_param {
+            n = 0;
+        }
+        if n == 0 {
+            erase_lo = here;
+            erase_hi = start + COLS as int;
+        } else if n == 1 {
+            erase_lo = start;
+            erase_hi = here + 1;
+        } else if n == 2 {
+            erase_lo = start;
+            erase_hi = start + COLS as int;
+        }
+    } else if final == 'm' {
+        if !have_param {
+            apply_sgr(0);
+        } else {
+            apply_sgr(param0);
+            if param_index >= 1 {
+                apply_sgr(param1);
+            }
+        }
+    } else if final == 's' {
+        saved_row = cur_row;
+        saved_col = cur_col;
+    } else if final == 'u' {
+        cur_row = saved_row;
+        cur_col = saved_col;
+    }
+}
+
+fn feed(c: byte) {
+    if state == GROUND {
+        if c == 27 {
+            state = AFTER_ESC;
+        } else if c == 13 {
+            cur_col = 0;
+        } else if c == 10 {
+            line_feed();
+        } else if c == 8 {
+            if cur_col > 0 {
+                cur_col -= 1;
+            }
+        } else if c == 9 {
+            cur_col = (cur_col / 8 + 1) * 8;
+            if cur_col >= COLS {
+                cur_col = COLS - 1;
+            }
+        } else if c >= 32 && c <= 126 {
+            let at = cur_row * COLS + cur_col;
+            screen[at] = c;
+            attrs[at] = attr;
+            cur_col += 1;
+            if cur_col >= COLS {
+                cur_col = 0;
+                line_feed();
+            }
+        }
+    } else if state == AFTER_ESC {
+        if c == '[' {
+            state = IN_CSI;
+            param0 = 0;
+            param1 = 0;
+            param_index = 0;
+            have_param = false;
+        } else {
+            // Escape sequences that are not CSI are skipped.
+            state = GROUND;
+        }
+    } else {
+        if c >= '0' && c <= '9' {
+            have_param = true;
+            // Parameters stay small; clamping avoids a wrap on absurd input.
+            if param_index == 0 {
+                if param0 < 100 {
+                    param0 = param0 * 10 + (c - '0');
+                }
+            } else if param1 < 100 {
+                param1 = param1 * 10 + (c - '0');
+            }
+        } else if c == ';' {
+            param_index = 1;
+        } else {
+            handle_csi(c);
+            state = GROUND;
+        }
+    }
+
+    if pending_scroll {
+        scroll_up();
+        pending_scroll = false;
+    }
+    if erase_hi > erase_lo {
+        fill(erase_lo, erase_hi);
+        erase_lo = 0;
+        erase_hi = 0;
+    }
+}
+
+fn set_colour(value: byte) {
+    if USE_COLOUR {
+        putc(27);
+        putc('[');
+        if value >= 8 {
+            print("1;");
+        } else {
+            print("0;");
+        }
+        print(30 + value % 8);
+        putc('m');
+    }
+}
+
+fn rule() {
+    putc('+');
+    for i in 0..COLS {
+        putc('-');
+    }
+    putc('+');
+    putc('\n');
+}
+
+fn render() {
+    rule();
+    for row in 0..ROWS {
+        putc('|');
+        // Only emit an escape sequence where the colour actually changes,
+        // the way a real terminal repaints.
+        let last = 255;
+        for col in 0..COLS {
+            let at = row * COLS + col;
+            let a = attrs[at];
+            if a != last {
+                set_colour(a);
+                last = a;
+            }
+            putc(screen[at]);
+        }
+        if USE_COLOUR {
+            putc(27);
+            print("[0m");
+        }
+        putc('|');
+        putc('\n');
+    }
+    rule();
+    print("cursor: row ");
+    print(cur_row + 1);
+    print(", col ");
+    print(cur_col + 1);
+    putc('\n');
+}
+
+fn main() {
+    fill(0, CELLS);
+
+    loop {
+        let c = getc();
+        if c == 0 {
+            break;
+        }
+        feed(c);
+    }
+
+    render();
+}
