@@ -337,7 +337,10 @@ fn link_elf_with_lld(
     let mut command = Command::new(lld);
     command.args(["-m", "armelf", "-T"]);
     command.arg(linker_script);
-    command.args(["--gc-sections", "--no-warn-execstack"]);
+    // No `--no-warn-execstack`: LLD 22 dropped it, and the executable-stack
+    // warning it silenced only ever reached output that a successful link
+    // throws away.
+    command.args(["--gc-sections"]);
     command.arg(startup_object);
     command.arg(runtime_object);
     command.arg(bf_object);
@@ -361,7 +364,6 @@ fn link_elf_with_gcc(
         "-mthumb-interwork",
         "-nostdlib",
         "-Wl,--gc-sections",
-        "-Wl,--no-warn-execstack",
     ]);
     command.arg(format!("-Wl,-T,{}", linker_script.display()));
     command.arg(startup_object);
@@ -619,6 +621,28 @@ mod tests {
         assert!(runtime.contains("__asm__(\"custom_getchar\")"));
         assert!(runtime.contains("hypothalamus_bf_entry();"));
         assert!(!runtime.contains("bf_main();"));
+    }
+
+    #[test]
+    fn runtime_c_provides_the_freestanding_memory_helpers() {
+        let target = crate::target::TargetProfile::resolve("gba");
+        let config = CompilerConfig::for_target("examples/hello.bf", target);
+
+        let runtime = runtime_c_source(&config);
+
+        // Optimized builds lower the tape clear into these, and a ROM links
+        // against no libc to find them in.
+        for symbol in [
+            "memset",
+            "memcpy",
+            "memmove",
+            "__aeabi_memclr",
+            "__aeabi_memset",
+            "__aeabi_memcpy",
+            "__aeabi_memmove",
+        ] {
+            assert!(runtime.contains(symbol), "runtime is missing {symbol}");
+        }
     }
 
     fn write_program_header(

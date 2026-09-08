@@ -12,6 +12,12 @@ void bf_putchar(unsigned char byte);
 int bf_getchar(void); /* return -1 for EOF / no input */
 ```
 
+At `--opt-level 1` and above the compiler recognises the run of stores that
+clears the tape and rewrites it as a `memset`, so a freestanding runtime has to
+provide `memset` as well — and on ARM the EABI spelling of it, `__aeabi_memclr`
+and friends. The built-in GBA runtime already does; a runtime of your own will
+not link without them.
+
 ## x86 Bare Metal
 
 Build a payload object:
@@ -59,9 +65,15 @@ The `gba` preset selects `thumbv4t-none-eabi` with ARM7TDMI/Thumb flags, links
 a tiny startup/runtime layer, extracts loadable ROM segments from the linked
 ELF, and writes a valid GBA header.
 
-The built-in v0 runtime displays output in Mode 3 text and returns `-1` from
-`bf_getchar`, so input instructions see EOF. Use object output for a custom
-runtime:
+The built-in runtime drives the Mode 3 framebuffer as a 40x20 text console.
+Printable ASCII renders from a built-in 5x7 font; newline, carriage return,
+tab, backspace and form feed do what a terminal would; lines wrap at the right
+edge; and reaching the bottom scrolls the screen by DMA rather than wiping it.
+A byte outside the printable range draws as a box, so nothing is silently
+dropped.
+
+`bf_getchar` returns `-1`, so input instructions see EOF. Use object output for
+a custom runtime:
 
 ```sh
 hypothalamus --target gba --emit obj examples/hello.bf -o hello_gba.o
