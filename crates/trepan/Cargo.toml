@@ -1,0 +1,31 @@
+[package]
+name = "trepan"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Lift Brainfuck back into structured Cranium"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/trepan"
+keywords = ["brainfuck", "decompiler", "cranium"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "trepan"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trepan"
+path = "src/main.rs"
+
+[dependencies]
+# The whole front end: the parser, and the IR that already folds runs, turns
+# `[-]` into a store and recognises multiply-transfer loops.
+hypothalamus.workspace = true
+
+[dev-dependencies]
+# Round-trip tests compile the lifted Cranium and run it next to the original.
+cranium-lang.workspace = true
+lobe.workspace = true

@@ -8,12 +8,13 @@ Brainfuck tooling monorepo: write real programs, then compile or interpret them.
 | [`hypothalamus`](crates/hypothalamus) | AOT compiler (LLVM) |
 | [`lobe`](crates/lobe) | Interpreter |
 | [`wernicke`](crates/wernicke) | Language server for Cranium |
+| [`trepan`](crates/trepan) | Lifts Brainfuck back into Cranium |
 
 Editor support: a [Zed extension](editors/zed) and the
 [tree-sitter grammar](editors/tree-sitter-cranium) behind it.
 
 ```bash
-cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe wernicke
+cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe wernicke trepan
 ```
 
 The three fit together end to end:
@@ -23,6 +24,11 @@ cranium life.cra -o life.bf     # Cranium  -> Brainfuck
 hypothalamus life.bf -o life    # Brainfuck -> native binary
 lobe life.bf                    # or just interpret it
 ```
+
+`trepan` goes the other way, turning Brainfuck back into Cranium for programs
+that never compute an address - including
+[`interpreter.bf`](crates/hypothalamus/examples/interpreter.bf), an 87 KB
+Brainfuck interpreter that comes back as 104 named variables and no array.
 
 Far enough that Cranium's examples include both a Brainfuck interpreter and
 `lobotomy`, an optimizing ahead-of-time Brainfuck compiler. Compiled, each is
