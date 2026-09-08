@@ -1,0 +1,470 @@
+// CRANIUM RAYCASTER
+//
+// A tiny first-person raycaster written in Cranium,
+// which means this entire thing can compile to Brainfuck.
+//
+// Run directly:
+//     cranium raycaster.cra --run
+//
+// Or embrace insanity:
+//     cranium raycaster.cra -o raycaster.bf --stats
+//     hypothalamus raycaster.bf -o raycaster --opt-level 1
+//
+// Controls:
+//     w = forward
+//     s = backward
+//     a = turn left
+//     d = turn right
+//     q = quit
+//
+// Normal terminals are line-buffered, so press Enter after a command.
+
+const MAP_W = 16;
+const MAP_H = 16;
+
+const VIEW_W = 24;
+const VIEW_H = 15;
+const HALF_VIEW = 12;
+
+const MAX_RAY_STEPS = 80;
+
+// Player/world coordinates use 6 fractional bits.
+//
+// 64 units = one map tile.
+const FIX_SHIFT = 6;
+const FIX = 64;
+
+// --------------------------------------------------------------------------
+// WORLD
+//
+// 0 = empty
+// 1 = wall
+// 2 = exit
+//
+// This array is deliberately first because the raycaster constantly performs
+// runtime indexing into it. Cranium puts earlier arrays closer on the tape.
+// --------------------------------------------------------------------------
+
+let world: byte[256] = [
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,1,1,1,1,0,0,0,0,1,1,1,1,0,1,
+    1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1,
+    1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,1,1,0,0,1,1,1,1,1,0,0,1,1,1,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,1,1,1,0,0,0,1,1,1,0,0,0,1,
+    1,0,0,1,0,0,0,0,0,0,0,1,0,0,0,1,
+    1,0,0,1,0,0,1,1,1,1,0,1,0,0,0,1,
+    1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,
+    1,0,1,1,1,0,1,0,0,0,1,1,1,1,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+];
+
+// One result per screen column.
+let heights: byte[24];
+let depths: byte[24];
+let hits: byte[24];
+
+// --------------------------------------------------------------------------
+// DIRECTION TABLE
+//
+// Fixed-point unit vectors:
+//
+// 0 east
+// 1 southeast
+// 2 south
+// 3 southwest
+// 4 west
+// 5 northwest
+// 6 north
+// 7 northeast
+//
+// 45 is roughly 64 / sqrt(2).
+// --------------------------------------------------------------------------
+
+let dir_x: sint[8] = [
+    64,
+    45,
+    0,
+    -45,
+    -64,
+    -45,
+    0,
+    45
+];
+
+let dir_y: sint[8] = [
+    0,
+    45,
+    64,
+    45,
+    0,
+    -45,
+    -64,
+    -45
+];
+
+// Start at tile 3,3, centered within it.
+let player_x: sint = 224;
+let player_y: sint = 224;
+
+let heading = 0;
+
+let running = true;
+let won = false;
+let moves: int = 0;
+
+// --------------------------------------------------------------------------
+// BASIC HELPERS
+// --------------------------------------------------------------------------
+
+fn clear_screen() {
+    // ANSI:
+    // ESC [ 2 J
+    // ESC [ H
+    putc(27);
+    print("[2J");
+    putc(27);
+    print("[H");
+}
+
+fn world_at(x: byte, y: byte) -> byte {
+    if x >= MAP_W || y >= MAP_H {
+        return 1;
+    }
+
+    return world[y as int * MAP_W + x as int];
+}
+
+fn direction_name() {
+    if heading == 0 {
+        print("E");
+    } else if heading == 1 {
+        print("SE");
+    } else if heading == 2 {
+        print("S");
+    } else if heading == 3 {
+        print("SW");
+    } else if heading == 4 {
+        print("W");
+    } else if heading == 5 {
+        print("NW");
+    } else if heading == 6 {
+        print("N");
+    } else {
+        print("NE");
+    }
+}
+
+// --------------------------------------------------------------------------
+// RAYCASTING
+// --------------------------------------------------------------------------
+
+fn cast_column(column: byte) {
+    // Forward vector.
+    let forward_x: sint = dir_x[heading];
+    let forward_y: sint = dir_y[heading];
+
+    // Right vector is exactly two 45-degree directions clockwise.
+    let right_heading = (heading + 2) % 8;
+
+    let right_x: sint = dir_x[right_heading];
+    let right_y: sint = dir_y[right_heading];
+
+    // Screen position relative to the center.
+    //
+    // -12 ... +11
+    let offset: sint = column as sint - HALF_VIEW as sint;
+
+    // Camera ray:
+    //
+    // forward + right * screen_offset
+    //
+    // Division by 16 controls field of view.
+    let ray_dx: sint =
+        forward_x + (right_x * offset) / 16;
+
+    let ray_dy: sint =
+        forward_y + (right_y * offset) / 16;
+
+    // Rays move about 1/8th of a tile on each iteration.
+    let step_x: sint = ray_dx / 8;
+    let step_y: sint = ray_dy / 8;
+
+    let ray_x: sint = player_x;
+    let ray_y: sint = player_y;
+
+    let distance = 0;
+    let wall = 0;
+
+    while wall == 0 && distance < MAX_RAY_STEPS {
+        ray_x += step_x;
+        ray_y += step_y;
+
+        distance += 1;
+
+        let map_x = (ray_x >> FIX_SHIFT) as byte;
+        let map_y = (ray_y >> FIX_SHIFT) as byte;
+
+        wall = world_at(map_x, map_y);
+    }
+
+    if distance == 0 {
+        distance = 1;
+    }
+
+    if wall == 0 {
+        wall = 1;
+    }
+
+    depths[column] = distance;
+    hits[column] = wall;
+
+    // Perspective projection.
+    //
+    // Nearby walls become tall.
+    // Distant walls become short.
+    let height = 96 / distance;
+
+    if height < 1 {
+        height = 1;
+    }
+
+    if height > VIEW_H {
+        height = VIEW_H;
+    }
+
+    heights[column] = height;
+}
+
+fn cast_scene() {
+    for column in 0..VIEW_W {
+        cast_column(column);
+    }
+}
+
+// --------------------------------------------------------------------------
+// WALL SHADING
+// --------------------------------------------------------------------------
+
+fn wall_character(distance: byte, wall: byte) -> byte {
+    // The exit is visually distinct.
+    if wall == 2 {
+        return 'X';
+    }
+
+    if distance <= 8 {
+        return '#';
+    }
+
+    if distance <= 16 {
+        return 'O';
+    }
+
+    if distance <= 28 {
+        return 'o';
+    }
+
+    if distance <= 42 {
+        return ':';
+    }
+
+    return '.';
+}
+
+// --------------------------------------------------------------------------
+// RENDERER
+// --------------------------------------------------------------------------
+
+fn draw_view() {
+    cast_scene();
+
+    println("+------------------------+");
+
+    for row in 0..VIEW_H {
+        putc('|');
+
+        for column in 0..VIEW_W {
+            let height = heights[column];
+
+            let top = (VIEW_H - height) / 2;
+            let bottom = top + height;
+
+            if row < top {
+                // Ceiling.
+                putc(' ');
+            } else if row < bottom {
+                // Wall.
+                putc(wall_character(
+                    depths[column],
+                    hits[column]
+                ));
+            } else {
+                // Floor.
+                if row == VIEW_H - 1 {
+                    putc('_');
+                } else if (row + column) % 2 == 0 {
+                    putc('.');
+                } else {
+                    putc(' ');
+                }
+            }
+        }
+
+        putc('|');
+        putc('\n');
+    }
+
+    println("+------------------------+");
+}
+
+// --------------------------------------------------------------------------
+// MOVEMENT
+// --------------------------------------------------------------------------
+
+fn turn_left() {
+    if heading == 0 {
+        heading = 7;
+    } else {
+        heading -= 1;
+    }
+}
+
+fn turn_right() {
+    heading += 1;
+
+    if heading >= 8 {
+        heading = 0;
+    }
+}
+
+fn try_move(forward: bool) {
+    let sign: sint = 1;
+
+    if !forward {
+        sign = -1;
+    }
+
+    // Roughly one quarter of a tile per movement.
+    let dx: sint = (dir_x[heading] / 4) * sign;
+    let dy: sint = (dir_y[heading] / 4) * sign;
+
+    let next_x: sint = player_x + dx;
+    let next_y: sint = player_y + dy;
+
+    let tile_x = (next_x >> FIX_SHIFT) as byte;
+    let tile_y = (next_y >> FIX_SHIFT) as byte;
+
+    let tile = world_at(tile_x, tile_y);
+
+    if tile == 0 {
+        player_x = next_x;
+        player_y = next_y;
+        moves += 1;
+    } else if tile == 2 {
+        player_x = next_x;
+        player_y = next_y;
+
+        moves += 1;
+        won = true;
+        running = false;
+    }
+}
+
+// --------------------------------------------------------------------------
+// INPUT
+// --------------------------------------------------------------------------
+
+fn read_command() -> byte {
+    loop {
+        let c = getc();
+
+        if c == 0 {
+            return 'q';
+        }
+
+        // Ignore terminal line endings and whitespace.
+        if c != '\n' && c != 13 && c != ' ' {
+            return c;
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// HUD
+// --------------------------------------------------------------------------
+
+fn draw_hud() {
+    println("");
+    print("Facing: ");
+    direction_name();
+
+    print("    Moves: ");
+    println(moves);
+
+    println("");
+    println("w forward   s backward");
+    println("a left      d right");
+    println("q quit");
+    println("");
+    println("Find the X wall.");
+    print("> ");
+}
+
+// --------------------------------------------------------------------------
+// MAIN
+// --------------------------------------------------------------------------
+
+fn main() {
+    while running {
+        clear_screen();
+
+        println("CRANIUM RAYCASTER");
+        println("");
+
+        draw_view();
+        draw_hud();
+
+        let command = read_command();
+
+        if command == 'w' || command == 'W' {
+            try_move(true);
+        } else if command == 's' || command == 'S' {
+            try_move(false);
+        } else if command == 'a' || command == 'A' {
+            turn_left();
+        } else if command == 'd' || command == 'D' {
+            turn_right();
+        } else if command == 'q' || command == 'Q' {
+            running = false;
+        }
+    }
+
+    clear_screen();
+
+    if won {
+        println("");
+        println("############################");
+        println("#                          #");
+        println("#        YOU ESCAPED       #");
+        println("#                          #");
+        println("############################");
+        println("");
+
+        print("Moves: ");
+        println(moves);
+
+        println("");
+        println("The maze was rendered by");
+        println("Cranium.");
+        println("");
+        println("Which compiled to Brainfuck.");
+        println("");
+    } else {
+        println("Raycaster terminated.");
+    }
+}

@@ -1,0 +1,234 @@
+// LUCKY TAPE
+// A fake-credit slot machine written in Cranium.
+//
+// Run:
+//     cranium lucky_tape.cra --run
+//
+// Compile all the way down to Brainfuck:
+//     cranium lucky_tape.cra -o lucky_tape.bf
+//     hypothalamus lucky_tape.bf -o lucky_tape --opt-level 1
+
+let credits: int = 100;
+let spins: int = 0;
+let biggest_win: int = 0;
+
+let rng: int = 43981;
+
+fn random() -> byte {
+    rng = rng * 25173 + 13849;
+    return (rng >> 8) as byte;
+}
+
+fn symbol_name(symbol: byte) {
+    if symbol == 0 {
+        print("CHERRY");
+    } else if symbol == 1 {
+        print("LEMON ");
+    } else if symbol == 2 {
+        print("BELL  ");
+    } else if symbol == 3 {
+        print("STAR  ");
+    } else {
+        print("SEVEN ");
+    }
+}
+
+fn draw_machine(a: byte, b: byte, c: byte) {
+    println("");
+    println("+---------------------------+");
+    println("|       L U C K Y T A P E   |");
+    println("+---------------------------+");
+    println("|                           |");
+
+    print("|  [ ");
+    symbol_name(a);
+    print(" ] [ ");
+    symbol_name(b);
+    print(" ] [ ");
+    symbol_name(c);
+    println(" ]  |");
+
+    println("|                           |");
+    println("+---------------------------+");
+}
+
+fn payout(a: byte, b: byte, c: byte) -> int {
+    // Three matching symbols.
+    if a == b && b == c {
+        if a == 4 {
+            return 50;
+        }
+
+        if a == 3 {
+            return 30;
+        }
+
+        if a == 2 {
+            return 20;
+        }
+
+        return 15;
+    }
+
+    // Any two matching.
+    if a == b || b == c || a == c {
+        return 5;
+    }
+
+    return 0;
+}
+
+fn clear_screen() {
+    putc(27);
+    print("[2J");
+    putc(27);
+    print("[H");
+}
+
+fn read_command() -> byte {
+    loop {
+        let c = getc();
+
+        if c == 0 {
+            return 'q';
+        }
+
+        if c != '\n' && c != 13 && c != ' ' {
+            return c;
+        }
+    }
+}
+
+fn show_stats() {
+    println("");
+    println("-----------------------------");
+
+    print("Arcade credits: ");
+    println(credits);
+
+    print("Spins:          ");
+    println(spins);
+
+    print("Biggest win:    ");
+    println(biggest_win);
+
+    println("-----------------------------");
+}
+
+fn spin() {
+    if credits < 5 {
+        println("");
+        println("You need 5 arcade credits to spin.");
+        return;
+    }
+
+    credits -= 5;
+    spins += 1;
+
+    let a = random() % 5;
+    let b = random() % 5;
+    let c = random() % 5;
+
+    let win = payout(a, b, c);
+
+    clear_screen();
+
+    draw_machine(a, b, c);
+
+    if win > 0 {
+        println("");
+        print("WIN! +");
+        print(win);
+        println(" credits");
+
+        credits += win;
+
+        if win > biggest_win {
+            biggest_win = win;
+        }
+    } else {
+        println("");
+        println("No match.");
+    }
+
+    show_stats();
+}
+
+fn main() {
+    clear_screen();
+
+    println("=============================");
+    println("         LUCKY TAPE");
+    println("=============================");
+    println("");
+    println("A Brainfuck-powered slot machine.");
+    println("");
+    println("These are fake arcade credits.");
+    println("There is no real money or cashout.");
+    println("");
+    println("Each spin costs 5 credits.");
+    println("");
+    println("Three SEVENs : +50");
+    println("Three STARs  : +30");
+    println("Three BELLs  : +20");
+    println("Other triples: +15");
+    println("Any pair     : +5");
+
+    let running = true;
+
+    while running {
+        show_stats();
+
+        if credits < 5 {
+            println("");
+            println("OUT OF CREDITS");
+            println("");
+            println("Press r to reset to 100.");
+            println("Press q to quit.");
+        } else {
+            println("");
+            println("s = spin");
+            println("q = quit");
+        }
+
+        print("> ");
+
+        let command = read_command();
+
+        if command == 's' || command == 'S' {
+            if credits >= 5 {
+                spin();
+            }
+        } else if command == 'r' || command == 'R' {
+            if credits < 5 {
+                credits = 100;
+                spins = 0;
+                biggest_win = 0;
+
+                clear_screen();
+                println("Machine reset.");
+            }
+        } else if command == 'q' || command == 'Q' {
+            running = false;
+        }
+    }
+
+    clear_screen();
+
+    println("=============================");
+    println("         GAME OVER");
+    println("=============================");
+    println("");
+
+    print("Final credits: ");
+    println(credits);
+
+    print("Total spins:   ");
+    println(spins);
+
+    print("Biggest win:   ");
+    println(biggest_win);
+
+    println("");
+    println("Thanks for playing Lucky Tape.");
+}
