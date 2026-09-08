@@ -802,6 +802,55 @@ fn compiles_and_runs_the_examples() {
     assert!(fizzbuzz.ends_with("Buzz\n"));
     assert_eq!(fizzbuzz.lines().count(), 100);
 
+    // The adventure: walk the intended route and check it can be finished.
+    let adventure = run_with(
+        include_str!("../examples/adventure.cra"),
+        b"take key
+e
+n
+take lamp
+e
+take sword
+w
+s
+e
+take rope
+n
+n
+open
+",
+    );
+    assert!(adventure.contains("-- The Cell --"), "{adventure}");
+    assert!(
+        adventure.contains("You take the brass lamp."),
+        "{adventure}"
+    );
+    assert!(
+        adventure.contains("You are free, in 8 moves."),
+        "{adventure}"
+    );
+
+    // Without the lamp the great hall is dark, and without the sword the
+    // hound in the courtyard is impassable.
+    let blocked = run_with(
+        include_str!("../examples/adventure.cra"),
+        b"e
+e
+n
+w
+n
+take lamp
+s
+e
+n
+n
+",
+    );
+    assert!(blocked.contains("-- Darkness --"), "{blocked}");
+    assert!(blocked.contains("You blunder into a pillar"), "{blocked}");
+    assert!(blocked.contains("The hound rises"), "{blocked}");
+    assert!(!blocked.contains("-- The Gate --"), "{blocked}");
+
     let sorted = run(include_str!("../examples/sort.cra"));
     assert!(
         sorted.contains("after:  1 3 7 9 19 23 31 42 55 64 77 88"),

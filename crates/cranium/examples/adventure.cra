@@ -1,0 +1,365 @@
+// A small text adventure: seven rooms, four things to carry, and one way out.
+//
+//     cranium examples/adventure.cra --run
+//
+// Commands are recognised by their first letter, so `n` and `north` are the
+// same word, as are `take lamp` and `t l`. That is traditional for the genre
+// and it is also what a tape without addressing wants: comparing one byte is
+// cheap, while comparing two strings means walking both of them.
+//
+// The map, the items and their descriptions are the three things that would
+// normally be tables of strings. Cranium has no array of arrays, so the map is
+// a flat array of room numbers and the prose lives in `if` chains that are
+// called from one place each - which also keeps the inliner from emitting the
+// same paragraph a dozen times.
+
+const LINE_MAX = 40;
+const ROOMS = 7;
+const ITEMS = 4;
+
+// Items, and the room each one starts in.
+const KEY = 0;
+const LAMP = 1;
+const SWORD = 2;
+const ROPE = 3;
+
+// Directions, used to index a room's four exits.
+const NORTH = 0;
+const SOUTH = 1;
+const EAST = 2;
+const WEST = 3;
+
+// Rooms worth naming, because the rules single them out.
+const CELL = 1;
+const HALL = 5;
+const COURTYARD = 6;
+const GATE = 7;
+
+// The line buffer is indexed once per keystroke, so it is declared first and
+// lands closest to the scalars.
+let line: byte[40];
+let length = 0;
+let ended = false;
+
+// exits[(room - 1) * 4 + direction], where 0 means there is no way out.
+let exits: byte[28] = [
+    0, 0, 2, 0, // 1 the cell
+    3, 0, 5, 1, // 2 the corridor
+    0, 2, 4, 0, // 3 the guard room
+    0, 0, 0, 3, // 4 the armoury
+    6, 0, 0, 2, // 5 the great hall
+    7, 5, 0, 0, // 6 the courtyard
+    0, 6, 0, 0 // 7 the gate
+];
+
+// Where each item is: a room number, or 0 once it is being carried.
+let item_room: byte[4] = [CELL, 3, 4, HALL];
+
+let room = CELL;
+let moves: int = 0;
+let playing = true;
+
+fn have(item: byte) -> bool {
+    return item_room[item] == 0;
+}
+
+// The great hall has no windows, so without the lamp it is simply dark.
+fn is_dark() -> bool {
+    return room == HALL && !have(LAMP);
+}
+
+fn name_of(item: byte) {
+    if item == KEY {
+        print("rusty key");
+    } else if item == LAMP {
+        print("brass lamp");
+    } else if item == SWORD {
+        print("short sword");
+    } else {
+        print("coil of rope");
+    }
+}
+
+// The noun is matched on its first letter too, which is enough to tell the
+// four items apart.
+fn item_of(letter: byte) -> byte {
+    if letter == 'k' {
+        return KEY;
+    }
+    if letter == 'l' {
+        return LAMP;
+    }
+    if letter == 's' {
+        return SWORD;
+    }
+    if letter == 'r' {
+        return ROPE;
+    }
+    return 255;
+}
+
+fn describe() {
+    if is_dark() {
+        println("-- Darkness --");
+        println("It is pitch black. Something rustles just out of reach, and");
+        println("you would rather not find out what. The corridor is west.");
+        return;
+    }
+
+    if room == CELL {
+        println("-- The Cell --");
+        println("Straw, a bucket, and a door someone forgot to bar. A rusty");
+        println("key lies where the last tenant dropped it. The way out is east.");
+    } else if room == 2 {
+        println("-- The Corridor --");
+        println("Cold flagstones running north to a guard room and east into");
+        println("a larger dark. Your cell is back west.");
+    } else if room == 3 {
+        println("-- The Guard Room --");
+        println("A table, two stools, and a game of dice abandoned mid-throw.");
+        println("The armoury is east, the corridor south.");
+    } else if room == 4 {
+        println("-- The Armoury --");
+        println("Racks stripped bare by whoever left in a hurry. They missed");
+        println("one blade. Back west.");
+    } else if room == HALL {
+        println("-- The Great Hall --");
+        println("Your lamp throws long shadows up pillars that vanish into the");
+        println("roof. A door stands open north. The corridor is west.");
+    } else if room == COURTYARD {
+        println("-- The Courtyard --");
+        println("Open sky at last. A lean grey hound watches the north arch and");
+        println("does not blink. The hall is south.");
+    } else {
+        println("-- The Gate --");
+        println("The last door, banded in iron, with a keyhole worn smooth.");
+        println("The courtyard is south.");
+    }
+
+    for i in 0..ITEMS {
+        if item_room[i] == room {
+            print("There is a ");
+            name_of(i);
+            println(" here.");
+        }
+    }
+}
+
+fn read_line() {
+    length = 0;
+    ended = false;
+    loop {
+        let c = getc();
+        if c == 0 {
+            ended = true;
+            break;
+        }
+        if c == '\n' {
+            break;
+        }
+        if c != 13 {
+            // Fold to lower case so LOOK and look are one command.
+            if c >= 'A' && c <= 'Z' {
+                c += 32;
+            }
+            if length < LINE_MAX {
+                line[length] = c;
+                length += 1;
+            }
+        }
+    }
+}
+
+// The first letter of the first word.
+fn verb() -> byte {
+    let i = 0;
+    while i < length && line[i] == ' ' {
+        i += 1;
+    }
+    if i >= length {
+        return 0;
+    }
+    return line[i];
+}
+
+// The first letter of the second word, if the player typed one.
+fn noun() -> byte {
+    let i = 0;
+    while i < length && line[i] == ' ' {
+        i += 1;
+    }
+    while i < length && line[i] != ' ' {
+        i += 1;
+    }
+    while i < length && line[i] == ' ' {
+        i += 1;
+    }
+    if i >= length {
+        return 0;
+    }
+    return line[i];
+}
+
+fn go(dir: byte) {
+    if is_dark() {
+        if dir == WEST {
+            room = 2;
+            moves += 1;
+            describe();
+        } else {
+            println("You blunder into a pillar and give it up. The corridor is");
+            println("west, and you can still feel your way back to it.");
+        }
+        return;
+    }
+
+    if room == COURTYARD && dir == NORTH && !have(SWORD) {
+        println("The hound rises, unhurried, and puts itself between you and the");
+        println("arch. You have nothing to argue with.");
+        return;
+    }
+
+    let dest = exits[(room - 1) * 4 + dir];
+    if dest == 0 {
+        println("There is no way through that wall.");
+        return;
+    }
+
+    room = dest;
+    moves += 1;
+    describe();
+}
+
+fn take(letter: byte) {
+    if letter == 0 {
+        println("Take what?");
+        return;
+    }
+    let item = item_of(letter);
+    if item == 255 || item_room[item] != room {
+        println("You cannot see that here.");
+        return;
+    }
+    item_room[item] = 0;
+    print("You take the ");
+    name_of(item);
+    println(".");
+}
+
+fn drop(letter: byte) {
+    if letter == 0 {
+        println("Drop what?");
+        return;
+    }
+    let item = item_of(letter);
+    if item == 255 || !have(item) {
+        println("You are not carrying that.");
+        return;
+    }
+    item_room[item] = room;
+    print("You set down the ");
+    name_of(item);
+    println(".");
+}
+
+fn inventory() {
+    let carrying = false;
+    for i in 0..ITEMS {
+        if item_room[i] == 0 {
+            if !carrying {
+                println("You are carrying:");
+                carrying = true;
+            }
+            print("  a ");
+            name_of(i);
+            putc('\n');
+        }
+    }
+    if !carrying {
+        println("Your hands are empty.");
+    }
+}
+
+fn open_gate() {
+    if room != GATE {
+        println("There is nothing here worth opening.");
+        return;
+    }
+    if !have(KEY) {
+        println("Locked, and the keyhole is looking at you expectantly.");
+        return;
+    }
+    if !have(ROPE) {
+        println("The key turns and the gate swings wide - onto a drop of thirty");
+        println("feet onto rock. You are going to need something to climb down.");
+        return;
+    }
+
+    println("");
+    println("The key turns. You make the rope fast, go over the wall hand over");
+    println("hand, and drop the last few feet into wet grass. Behind you the");
+    println("keep stands quiet, and nobody comes out after you.");
+    print("You are free, in ");
+    print(moves);
+    println(" moves.");
+    playing = false;
+}
+
+fn help() {
+    println("Type a direction - n, s, e, w - or one of:");
+    println("  look        describe where you are");
+    println("  take <item> pick something up");
+    println("  drop <item> put it down again");
+    println("  inventory   what you are carrying");
+    println("  open        try the gate");
+    println("  quit        give up");
+}
+
+fn main() {
+    println("THE KEEP");
+    println("A small adventure. Type `help` if you want the verbs.");
+    println("");
+    describe();
+
+    while playing {
+        print("> ");
+        read_line();
+
+        if ended && length == 0 {
+            println("");
+            println("You are still in there somewhere.");
+            playing = false;
+        } else {
+            let v = verb();
+
+            if v == 'n' {
+                go(NORTH);
+            } else if v == 's' {
+                go(SOUTH);
+            } else if v == 'e' {
+                go(EAST);
+            } else if v == 'w' {
+                go(WEST);
+            } else if v == 'l' {
+                describe();
+            } else if v == 't' || v == 'g' {
+                take(noun());
+            } else if v == 'd' {
+                drop(noun());
+            } else if v == 'i' {
+                inventory();
+            } else if v == 'o' {
+                open_gate();
+            } else if v == 'h' || v == '?' {
+                help();
+            } else if v == 'q' {
+                println("You sit back down on the straw.");
+                playing = false;
+            } else if v == 0 {
+                println("Say something.");
+            } else {
+                println("That is not a verb I know. Try `help`.");
+            }
+        }
+    }
+}

@@ -52,6 +52,7 @@ fn living_neighbours(x: byte, y: byte) -> byte {
 
 See [`examples/`](examples) for Conway's Game of Life, an expression
 calculator with real operator precedence, a bubble sort, FizzBuzz, a
+[text adventure](examples/adventure.cra), a
 [VT100 terminal emulator](examples/terminal.cra), a
 [Brainfuck interpreter](examples/bfi.cra), and
 [`lobotomy`](examples/lobotomy.cra) — an optimizing ahead-of-time Brainfuck
