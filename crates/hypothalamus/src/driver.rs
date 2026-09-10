@@ -19,7 +19,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
+use target_lexicon::Triple;
 
 /// Commands tried, in order, when no linker is configured.
 ///
@@ -465,7 +467,36 @@ fn validate_config(config: &CompilerConfig) -> Result<(), DriverError> {
         )));
     }
 
+    // Cranelift will happily emit the object, but the link afterwards runs the
+    // host's own linker against the host's C runtime. Saying so beats letting
+    // the linker report it as an unknown file type.
+    if config.emit == EmitKind::Executable
+        && let Some(triple) = config.target.triple()
+        && !links_on_this_host(triple)
+    {
+        return Err(DriverError::InvalidConfig(format!(
+            "target `{}` cannot be linked on this host ({}). \
+             Use --emit obj and link the object with a toolchain for that target",
+            config.target.name(),
+            Triple::host()
+        )));
+    }
+
     Ok(())
+}
+
+/// Whether an executable for `triple` could be linked by the host's toolchain.
+///
+/// Only the architecture and operating system matter: those decide the object
+/// format, the C runtime, and the startup files. A triple that does not parse
+/// is left alone, so that [`isa::build`] can report it properly.
+fn links_on_this_host(triple: &str) -> bool {
+    let Ok(triple) = Triple::from_str(triple) else {
+        return true;
+    };
+    let host = Triple::host();
+
+    triple.architecture == host.architecture && triple.operating_system == host.operating_system
 }
 
 fn parse_input(config: &CompilerConfig) -> Result<Vec<bf::Op>, DriverError> {

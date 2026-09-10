@@ -396,7 +396,7 @@ Options:
       --entry <SYMBOL>      Freestanding entry function [default: bf_main]
       --putchar-symbol <S>  Freestanding output hook: void (u8) [default: bf_putchar]
       --getchar-symbol <S>  Freestanding input hook: int () [default: bf_getchar]
-      --opt-level <LEVEL>   0, 1, 2, 3, s, or z [default: 2]
+      --opt-level <LEVEL>   0/none, 1-3/speed, or s/z/size [default: speed]
       --linker <PATH>       C compiler driver used to link executables
       --keep-object         Keep the generated object file beside the output
   -h, --help                Print help

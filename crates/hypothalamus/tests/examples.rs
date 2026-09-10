@@ -193,6 +193,62 @@ fn compiled_programs_and_the_jit_agree_on_bytes() {
     assert_eq!(run(&executable, b"AB"), b"BC\n");
 }
 
+#[test]
+fn keep_object_decides_whether_the_object_survives_the_link() {
+    if driver::find_linker(None).is_none() {
+        eprintln!("skipping --keep-object smoke test: no linker on PATH");
+        return;
+    }
+
+    for keep_object in [false, true] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let output = temp_dir.path().join("hello");
+
+        let mut config = CompilerConfig::new("examples/hello.bf");
+        config.output = Some(output.clone());
+        config.keep_object = keep_object;
+        compile(&config).expect("hello.bf should link");
+
+        // The object lands beside the output, whatever extension the
+        // executable ended up with.
+        assert_eq!(
+            output.with_extension("o").exists(),
+            keep_object,
+            "keep_object = {keep_object}"
+        );
+    }
+}
+
+#[test]
+fn refuses_to_link_an_executable_for_another_host() {
+    // Cranelift can emit the object for any target, but the link would run
+    // this host's linker against this host's C runtime.
+    let elsewhere = if cfg!(windows) {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        "x86_64-pc-windows-msvc"
+    };
+
+    let mut config =
+        CompilerConfig::for_target("examples/hello.bf", TargetProfile::resolve(elsewhere));
+    config.emit = EmitKind::Executable;
+
+    let error = compile(&config).expect_err("a cross-host link should be refused");
+
+    assert!(
+        matches!(&error, DriverError::InvalidConfig(message) if message.contains("--emit obj")),
+        "{error}"
+    );
+
+    // The same target is fine as an object.
+    config.emit = EmitKind::Object;
+    assert!(
+        !compile_to_object(&config)
+            .expect("object should compile")
+            .is_empty()
+    );
+}
+
 fn run(executable: &Path, input: &[u8]) -> Vec<u8> {
     let mut child = Command::new(executable)
         .stdin(Stdio::piped())
