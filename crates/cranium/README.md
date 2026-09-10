@@ -164,16 +164,43 @@ hold. It works anyway because Cranium has one namespace and inlines every call:
 `present` calls a `shade` that `std/gfx.cra` never defines, and the program's
 own definition is what it resolves to, at compile time.
 
-Input works too, though the terminal has to be asked. `,` blocks and stdin is
-line-buffered, neither of which a game loop wants; both are the shell's to fix,
-not the program's:
+### Animation and input
+
+`home()` puts the cursor back at the top left, so the next `present()`
+overwrites the last frame instead of scrolling it away. There is no double
+buffer, because there is nowhere to put one that would be cheaper than drawing
+again. Brainfuck cannot sleep either, so the frame rate is however fast the
+program runs.
+
+Input needs the terminal asked. `,` blocks and stdin is line-buffered, neither
+of which a game loop wants, and both are the terminal's settings rather than
+the program's:
 
 ```bash
 stty -icanon -echo min 0 time 0     # unbuffered, and reads return immediately
 ```
 
 `getc` allocates a fresh cell before reading and Brainfuck leaves that cell
-alone at end of input, so "no key" arrives as `0` and a program can poll.
+alone at end of input, so with `min 0 time 0` set, "nobody pressed anything"
+arrives as `0` and the loop keeps running.
+
+[`bounce.cra`](examples/bounce.cra) is the two together — a ball bouncing
+around a drifting background, steered with `wasd`, at about 36 ms a frame:
+
+```bash
+stty -icanon -echo min 0 time 0
+cranium bounce.cra --run
+stty sane
+```
+
+Without the `stty` it still runs, it just waits on `getc` until you press
+Enter, which makes it a slideshow. There is no equivalent on Windows, where the
+console keeps its own line discipline. Piping works anywhere, which is how it
+is tested:
+
+```bash
+printf '....q' | cranium bounce.cra --run
+```
 
 ## The language
 

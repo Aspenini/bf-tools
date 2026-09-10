@@ -1112,3 +1112,70 @@ fn truecolor_draws_a_gradient_out_of_half_blocks() {
     assert_eq!(frame.matches("\u{1b}[38;2;").count(), 16 * 64);
     assert_eq!(frame.matches("\u{1b}[48;2;").count(), 16 * 64);
 }
+
+/// The animation contract: `home` before each frame is what draws in place,
+/// and a read that returns nothing is what lets the loop keep running.
+///
+/// Deliberately an 8x4 screen. The interpreter is slow enough that a full
+/// 64x32 frame costs seconds, and nothing being checked here depends on size.
+#[test]
+fn gfx_animates_in_place() {
+    let frames = run_with(
+        r#"
+import "std/gfx.cra";
+
+fn shade(x: byte, y: byte) {
+    set_rgb(x, y, 0);
+}
+
+fn main() {
+    gfx_w = 8;
+    gfx_h = 4;
+
+    hide_cursor();
+    clear();
+
+    loop {
+        let key = getc();
+        if key == 'q' {
+            break;
+        }
+        home();
+        present();
+    }
+
+    show_cursor();
+    reset_color();
+}
+"#,
+        // Two bytes the program ignores, which is what a key nobody pressed
+        // looks like, then quit.
+        b"..q",
+    );
+
+    // 8x4 pixels is 8 cells across and 2 rows down, twice over.
+    assert_eq!(frames.matches('\u{2580}').count(), 2 * 8 * 2);
+    // One home from `clear`, then one before each frame.
+    assert_eq!(frames.matches("\u{1b}[H").count(), 3);
+    // The terminal is left as it was found.
+    assert_eq!(frames.matches("\u{1b}[?25l").count(), 1);
+    assert!(
+        frames.ends_with("\u{1b}[?25h\u{1b}[0m"),
+        "cursor and colour not restored"
+    );
+}
+
+/// The animated example is big enough that running it here would cost more
+/// than it is worth, so this only checks it still compiles - which is what
+/// would break if the library changed under it.
+#[test]
+fn bounce_example_compiles() {
+    let compiled =
+        compile_str(include_str!("../examples/bounce.cra")).expect("bounce.cra should compile");
+
+    assert!(compiled.code.len() > 100_000, "suspiciously small");
+    assert!(
+        compiled.cells_used < 200,
+        "the demo should not want a big tape"
+    );
+}

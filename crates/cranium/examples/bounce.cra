@@ -1,0 +1,164 @@
+// A ball bouncing around, steered from the keyboard, animated in place.
+//
+//     stty -icanon -echo min 0 time 0     # see below
+//     cranium bounce.cra --run
+//     stty sane                           # afterwards
+//
+//     a / d   push left / right
+//     w / s   push up / down
+//     q       quit
+//
+// `home()` puts the cursor back at the top left before each frame, so
+// `present()` overwrites the last one instead of scrolling it away. That is
+// the whole of the animation: there is no double buffer, because there is
+// nowhere to put one that would be cheaper than simply drawing again.
+//
+// Brainfuck cannot sleep, so the frame rate is however fast the program runs:
+// about 36 ms a frame, or 27 a second, once hypothalamus has compiled it.
+//
+// INPUT
+//
+// `,` blocks and a terminal hands over whole lines, neither of which suits a
+// loop like this. Both are the terminal's settings rather than the program's,
+// which is why the `stty` above is not optional:
+//
+//     -icanon        deliver keys as they are typed, not at Enter
+//     -echo          do not print them over the picture
+//     min 0 time 0   a read with nothing waiting returns nothing at all
+//
+// With that set, `getc` returns 0 when no key is waiting, because it allocates
+// a fresh cell and Brainfuck leaves the cell alone at end of input. So 0 means
+// "nobody pressed anything", and the loop keeps running.
+//
+// Without it the program still works, it just stalls on `getc` until you press
+// Enter - a slideshow rather than an animation. There is no equivalent on
+// Windows, where the console keeps its own line discipline.
+//
+// Piping input works anywhere, and is how this is tested:
+//
+//     printf '....q' | cranium bounce.cra --run
+
+import "std/gfx.cra";
+
+// Half-width of the ball, as a diamond: |dx| + |dy| under this is inside it.
+// A circle would want dx*dx + dy*dy, and a 16-bit multiply per pixel is the
+// one thing this loop cannot afford.
+const BALL = 7;
+
+const SPEED = 2;
+
+// Where the ball may sit without leaving the screen.
+const MIN_X = 7;
+const MAX_X = 56;
+const MIN_Y = 7;
+const MAX_Y = 24;
+
+let ball_x: byte = 20;
+let ball_y: byte = 12;
+let going_right: bool = true;
+let going_down: bool = true;
+
+// Advances every frame; the background is a function of it, so the whole
+// picture drifts.
+let tick: byte = 0;
+
+// --------------------------------------------------------------------------
+// Called once per pixel by `present`, in scan order.
+// --------------------------------------------------------------------------
+fn shade(x: byte, y: byte) {
+    // Distance to the ball, without a signed type: subtract the smaller from
+    // the larger.
+    let dx: byte = 0;
+    if x > ball_x {
+        dx = x - ball_x;
+    } else {
+        dx = ball_x - x;
+    }
+
+    let dy: byte = 0;
+    if y > ball_y {
+        dy = y - ball_y;
+    } else {
+        dy = ball_y - y;
+    }
+
+    let reach = dx + dy;
+    if reach < BALL {
+        // Brighter towards the middle. `reach` is 0 at the centre and BALL - 1
+        // at the edge, so this runs 0 to 48 and the brightest pixel is 248 -
+        // still a byte. Get that wrong by one and the centre wraps past 255
+        // and comes back as a single green dot, which is easy to miss.
+        let lit = (BALL - 1 - reach) * 8;
+        set_rgb(200 + lit, 120 + lit, 30);
+    } else {
+        // Diagonal bands that slide as `tick` climbs. The additions wrap at
+        // 255, which is what makes them repeat rather than run out.
+        let band = x + y + tick;
+        set_rgb(band, 30, 150 - band);
+    }
+}
+
+fn main() {
+    hide_cursor();
+    clear();
+
+    loop {
+        // One key per frame is enough; the rest wait for the next one.
+        let key = getc();
+        if key == 'q' {
+            break;
+        } else if key == 'a' {
+            going_right = false;
+        } else if key == 'd' {
+            going_right = true;
+        } else if key == 'w' {
+            going_down = false;
+        } else if key == 's' {
+            going_down = true;
+        }
+
+        // Move, turning around at each wall. Positions are unsigned, so every
+        // edge is tested before it is crossed rather than after.
+        if going_right {
+            if ball_x >= MAX_X - SPEED {
+                ball_x = MAX_X;
+                going_right = false;
+            } else {
+                ball_x = ball_x + SPEED;
+            }
+        } else {
+            if ball_x <= MIN_X + SPEED {
+                ball_x = MIN_X;
+                going_right = true;
+            } else {
+                ball_x = ball_x - SPEED;
+            }
+        }
+
+        if going_down {
+            if ball_y >= MAX_Y - SPEED {
+                ball_y = MAX_Y;
+                going_down = false;
+            } else {
+                ball_y = ball_y + SPEED;
+            }
+        } else {
+            if ball_y <= MIN_Y + SPEED {
+                ball_y = MIN_Y;
+                going_down = true;
+            } else {
+                ball_y = ball_y - SPEED;
+            }
+        }
+
+        home();
+        present();
+
+        tick = tick + 1;
+    }
+
+    // Leave the terminal as it was found.
+    show_cursor();
+    reset_color();
+    println("");
+}
