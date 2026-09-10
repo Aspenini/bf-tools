@@ -96,8 +96,9 @@ fn main() {
         color(rgb(0, 0, 1));
         clear();
 
-        // A shadow, so the movement reads as movement.
-        color(rgb(0, 0, 2));
+        // A shadow, so the movement reads as movement. Black, because the
+        // background is already dark and a lighter one would not show.
+        color(rgb(0, 0, 0));
         rect(x + 2, y + 2, BALL, BALL);
 
         color(rgb(5, 3, 0));
