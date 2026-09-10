@@ -1,0 +1,112 @@
+// A ball, bouncing, steered by the arrow keys.
+//
+//     occipital examples/bounce.cra
+//
+// This is the part a Cranium program could not do before: it polls the
+// keyboard without blocking, redraws on its own schedule, and closes its own
+// window. All of it still compiles to Brainfuck, and all of it still travels
+// through one byte out and one byte in.
+//
+//     arrows  steer
+//     q       quit
+
+import "gfx.cra";
+
+const BALL = 10;
+const SPEED = 3;
+
+// The far edge the ball's top-left corner can reach.
+const LIMIT_X = 246;
+const LIMIT_Y = 182;
+
+fn main() {
+    // Non-blocking reads. Without this the first `poll` would wait for a
+    // keystroke and the ball would never move.
+    events_mode();
+
+    let x: byte = 40;
+    let y: byte = 40;
+    let going_right: bool = true;
+    let going_down: bool = true;
+
+    loop {
+        // ---- input ----------------------------------------------------
+        //
+        // One event per frame is enough; anything else waits for the next.
+        let e = poll();
+        if e == EV_QUIT {
+            break;
+        } else if e == EV_KEY_DOWN {
+            let k = poll_key();
+            if k == 'q' {
+                quit();
+                break;
+            } else if k == KEY_LEFT {
+                going_right = false;
+            } else if k == KEY_RIGHT {
+                going_right = true;
+            } else if k == KEY_UP {
+                going_down = false;
+            } else if k == KEY_DOWN {
+                going_down = true;
+            }
+        } else if e == EV_KEY_UP {
+            // The code still has to be read, or it would be mistaken for the
+            // next event.
+            let ignored = poll_key();
+        }
+
+        // ---- move -----------------------------------------------------
+        //
+        // Positions are unsigned bytes, so direction is a flag rather than a
+        // negative step, and every edge is tested before it is crossed.
+        if going_right {
+            if x >= LIMIT_X - SPEED {
+                x = LIMIT_X;
+                going_right = false;
+            } else {
+                x = x + SPEED;
+            }
+        } else {
+            if x <= SPEED {
+                x = 0;
+                going_right = true;
+            } else {
+                x = x - SPEED;
+            }
+        }
+
+        if going_down {
+            if y >= LIMIT_Y - SPEED {
+                y = LIMIT_Y;
+                going_down = false;
+            } else {
+                y = y + SPEED;
+            }
+        } else {
+            if y <= SPEED {
+                y = 0;
+                going_down = true;
+            } else {
+                y = y - SPEED;
+            }
+        }
+
+        // ---- draw -----------------------------------------------------
+        color(rgb(0, 0, 1));
+        clear();
+
+        // A shadow, so the movement reads as movement.
+        color(rgb(0, 0, 2));
+        rect(x + 2, y + 2, BALL, BALL);
+
+        color(rgb(5, 3, 0));
+        rect(x, y, BALL, BALL);
+
+        color(15);
+        at(1, 1);
+        print("arrows steer   q quits");
+
+        present();
+    }
+}

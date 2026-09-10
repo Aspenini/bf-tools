@@ -1,0 +1,22 @@
+[package]
+name = "occipital"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "A window for Brainfuck programs: a framebuffer and a keyboard behind one byte in and one byte out"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/occipital"
+keywords = ["brainfuck", "graphics", "framebuffer", "jit"]
+categories = ["command-line-utilities", "graphics"]
+
+[dependencies]
+# The program is compiled for the host and run in process, with the window
+# standing in for the two I/O hooks.
+hypothalamus.workspace = true
+# A `.cra` file is compiled to Brainfuck on the way in, so a Cranium program
+# runs in one step.
+cranium-lang.workspace = true
+minifb = "0.28"

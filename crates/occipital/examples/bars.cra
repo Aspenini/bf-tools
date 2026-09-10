@@ -1,0 +1,33 @@
+// The default palette's colour cube, drawn as bands.
+//
+//     occipital examples/bars.cra
+//
+// Or, the long way round, proving there is no trick to it:
+//
+//     cranium examples/bars.cra -o bars.bf
+//     occipital bars.bf
+
+import "gfx.cra";
+
+const CELL_W = 7;
+const BAND_H = 32;
+
+fn main() {
+    color(0);
+    clear();
+
+    // Six bands of red, each holding all 36 green/blue combinations.
+    for r in 0..6 {
+        for g in 0..6 {
+            for b in 0..6 {
+                color(rgb(r, g, b));
+                rect((g * 6 + b) * CELL_W, r * BAND_H, CELL_W, BAND_H);
+            }
+        }
+    }
+
+    color(15);
+    at(1, 22);
+    print("216 colours, drawn by Brainfuck");
+    present();
+}
