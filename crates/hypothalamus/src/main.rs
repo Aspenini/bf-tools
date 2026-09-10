@@ -1,7 +1,7 @@
 use hypothalamus::DEFAULT_TAPE_SIZE;
+use hypothalamus::codegen::FreestandingOptions;
 use hypothalamus::diagnostics::{ToolDoctorConfig, tools_doctor_report};
-use hypothalamus::driver::{CompilerConfig, DriverError, EmitKind, OptLevel, compile_with_tools};
-use hypothalamus::llvm::FreestandingOptions;
+use hypothalamus::driver::{CompilerConfig, DriverError, EmitKind, OptLevel, compile};
 use hypothalamus::target::{RuntimeAbi, TargetProfile, known_targets};
 use std::env;
 use std::path::PathBuf;
@@ -16,6 +16,30 @@ enum Action {
     ToolsDoctor(ToolDoctorConfig),
     ToolsHelp,
 }
+
+/// Options that went away with the LLVM backend, and what replaced them.
+const REMOVED_OPTIONS: &[(&str, &str)] = &[
+    (
+        "--cc",
+        "use --linker <PATH>; Cranelift only needs a tool to link",
+    ),
+    (
+        "--lli",
+        "removed with the LLVM backend; --run uses the built-in JIT",
+    ),
+    (
+        "--keep-ll",
+        "use --keep-object to keep the generated object file",
+    ),
+    (
+        "--gba-gcc",
+        "the gba target was removed; Cranelift has no 32-bit ARM backend",
+    ),
+    (
+        "--gba-objcopy",
+        "the gba target was removed; Cranelift has no 32-bit ARM backend",
+    ),
+];
 
 fn main() -> ExitCode {
     match run() {
@@ -54,7 +78,7 @@ fn run() -> Result<(), Error> {
             print_tools_help();
             Ok(())
         }
-        Action::Run(config) => compile_with_tools(&config).map_err(Error::from),
+        Action::Run(config) => compile(&config).map_err(Error::from),
     }
 }
 
@@ -75,12 +99,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
     let mut entry_symbol = "bf_main".to_string();
     let mut putchar_symbol = "bf_putchar".to_string();
     let mut getchar_symbol = "bf_getchar".to_string();
-    let mut opt_level = OptLevel::Two;
-    let mut clang = "clang".to_string();
-    let mut lli = "lli".to_string();
-    let mut keep_ll = false;
-    let mut gba_gcc = None;
-    let mut gba_objcopy = None;
+    let mut opt_level = OptLevel::Speed;
+    let mut linker = None;
+    let mut keep_object = false;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -125,20 +146,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
             "--opt-level" => {
                 opt_level = parse_opt_level_value(&next_value(&mut args, &arg)?)?;
             }
-            "--cc" => {
-                clang = next_value(&mut args, &arg)?;
+            "--linker" => {
+                linker = Some(next_value(&mut args, &arg)?);
             }
-            "--lli" => {
-                lli = next_value(&mut args, &arg)?;
-            }
-            "--keep-ll" => {
-                keep_ll = true;
-            }
-            "--gba-gcc" => {
-                gba_gcc = Some(PathBuf::from(next_value(&mut args, &arg)?));
-            }
-            "--gba-objcopy" => {
-                gba_objcopy = Some(PathBuf::from(next_value(&mut args, &arg)?));
+            "--keep-object" => {
+                keep_object = true;
             }
             "--" => {
                 for value in args {
@@ -173,6 +185,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
             _ if arg.starts_with("--tape-size=") => {
                 tape_size = parse_tape_size(value_after_equals(&arg))?;
             }
+            _ if arg.starts_with("--linker=") => {
+                linker = Some(value_after_equals(&arg).to_string());
+            }
             _ if arg.starts_with("--bounds-check=") => {
                 return Err(Error::Usage(
                     "--bounds-check does not take a value".to_string(),
@@ -183,43 +198,28 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
                     "--freestanding does not take a value".to_string(),
                 ));
             }
+            _ if arg.starts_with("--keep-object=") => {
+                return Err(Error::Usage(
+                    "--keep-object does not take a value".to_string(),
+                ));
+            }
             _ if arg.starts_with("--list-targets=") => {
                 return Err(Error::Usage(
                     "--list-targets does not take a value".to_string(),
                 ));
             }
-            _ if arg.starts_with("--cc=") => {
-                clang = value_after_equals(&arg).to_string();
-            }
-            _ if arg.starts_with("--lli=") => {
-                lli = value_after_equals(&arg).to_string();
-            }
-            _ if arg.starts_with("--gba-gcc=") => {
-                gba_gcc = Some(PathBuf::from(value_after_equals(&arg)));
-            }
-            _ if arg.starts_with("--gba-objcopy=") => {
-                gba_objcopy = Some(PathBuf::from(value_after_equals(&arg)));
-            }
             "-O0" => {
-                opt_level = OptLevel::Zero;
+                opt_level = OptLevel::None;
             }
-            "-O1" => {
-                opt_level = OptLevel::One;
+            "-O1" | "-O2" | "-O3" => {
+                opt_level = OptLevel::Speed;
             }
-            "-O2" => {
-                opt_level = OptLevel::Two;
-            }
-            "-O3" => {
-                opt_level = OptLevel::Three;
-            }
-            "-Os" => {
-                opt_level = OptLevel::Size;
-            }
-            "-Oz" => {
-                opt_level = OptLevel::SizeMin;
+            "-Os" | "-Oz" => {
+                opt_level = OptLevel::SpeedAndSize;
             }
             _ if arg.starts_with('-') && arg != "-" => {
-                return Err(Error::Usage(format!("unknown option `{arg}`")));
+                return Err(removed_option(&arg)
+                    .unwrap_or_else(|| Error::Usage(format!("unknown option `{arg}`"))));
             }
             _ => set_input(&mut input, arg)?,
         }
@@ -244,14 +244,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
     }
 
     let emit = emit.unwrap_or_else(|| target.default_emit());
-    if target.is_freestanding()
-        && matches!(
-            emit,
-            EmitKind::Executable | EmitKind::Jit | EmitKind::LlvmJit
-        )
-    {
+    if target.is_freestanding() && matches!(emit, EmitKind::Executable | EmitKind::Jit) {
         return Err(Error::Usage(format!(
-            "target `{}` uses a freestanding runtime and supports --emit obj, --emit asm, --emit llvm-ir, or target images",
+            "target `{}` uses a freestanding runtime and supports --emit obj",
             target.name()
         )));
     }
@@ -264,11 +259,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Action, Error> {
         tape_size,
         bounds_check,
         opt_level,
-        clang,
-        lli,
-        keep_ll,
-        gba_gcc,
-        gba_objcopy,
+        linker,
+        keep_object,
     })))
 }
 
@@ -294,26 +286,16 @@ fn parse_tools_args(args: impl IntoIterator<Item = String>) -> Result<Action, Er
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Action::ToolsHelp),
-            "--cc" => {
-                config.clang = next_value(&mut args, &arg)?;
+            "--linker" => {
+                config.linker = Some(next_value(&mut args, &arg)?);
             }
-            "--lli" => {
-                config.lli = next_value(&mut args, &arg)?;
-            }
-            "--gba-gcc" => {
-                config.gba_gcc = Some(PathBuf::from(next_value(&mut args, &arg)?));
-            }
-            _ if arg.starts_with("--cc=") => {
-                config.clang = value_after_equals(&arg).to_string();
-            }
-            _ if arg.starts_with("--lli=") => {
-                config.lli = value_after_equals(&arg).to_string();
-            }
-            _ if arg.starts_with("--gba-gcc=") => {
-                config.gba_gcc = Some(PathBuf::from(value_after_equals(&arg)));
+            _ if arg.starts_with("--linker=") => {
+                config.linker = Some(value_after_equals(&arg).to_string());
             }
             _ if arg.starts_with('-') => {
-                return Err(Error::Usage(format!("unknown tools doctor option `{arg}`")));
+                return Err(removed_option(&arg).unwrap_or_else(|| {
+                    Error::Usage(format!("unknown tools doctor option `{arg}`"))
+                }));
             }
             _ => {
                 return Err(Error::Usage(format!(
@@ -324,6 +306,17 @@ fn parse_tools_args(args: impl IntoIterator<Item = String>) -> Result<Action, Er
     }
 
     Ok(Action::ToolsDoctor(config))
+}
+
+/// Explain an option the LLVM backend used to accept, rather than just
+/// reporting it as unknown.
+fn removed_option(arg: &str) -> Option<Error> {
+    let name = arg.split_once('=').map(|(name, _)| name).unwrap_or(arg);
+
+    REMOVED_OPTIONS
+        .iter()
+        .find(|(removed, _)| *removed == name)
+        .map(|(removed, hint)| Error::Usage(format!("`{removed}` was removed: {hint}")))
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<String, Error> {
@@ -343,7 +336,7 @@ fn set_input(input: &mut Option<PathBuf>, value: String) -> Result<(), Error> {
 fn parse_emit_value(value: &str) -> Result<EmitKind, Error> {
     EmitKind::parse(value).ok_or_else(|| {
         Error::Usage(format!(
-            "invalid --emit value `{value}`; expected exe, obj, asm, llvm-ir, jit, llvm-jit, or image"
+            "invalid --emit value `{value}`; expected exe, obj, or jit"
         ))
     })
 }
@@ -369,47 +362,51 @@ fn value_after_equals(value: &str) -> &str {
 fn print_targets() {
     println!("Known target presets:");
     for target in known_targets() {
-        let triple = target.llvm_triple.unwrap_or("host default");
+        let triple = target.triple.unwrap_or("host default");
         let runtime = match target.runtime_abi {
             hypothalamus::target::RuntimeAbiKind::Hosted => "hosted",
             hypothalamus::target::RuntimeAbiKind::Freestanding => "freestanding",
         };
         println!(
-            "  {:12} {:26} {:12} {}",
+            "  {:12} {:24} {:13} {}",
             target.name, triple, runtime, target.description
         );
     }
+    println!();
+    println!("Any Cranelift target triple also works: x86_64, aarch64, riscv64, and s390x.");
 }
 
 fn print_help() {
     println!(
-        r#"Hypothalamus - Brainfuck AOT compiler with an LLVM backend
+        r#"Hypothalamus - Brainfuck AOT compiler with a Cranelift backend
 
 Usage:
   hypothalamus [OPTIONS] <INPUT>
   hypothalamus tools doctor [OPTIONS]
 
 Options:
-  -o, --output <PATH>       Output path. Use '-' with --emit llvm-ir for stdout
-      --emit <KIND>         exe, obj, asm, llvm-ir, jit, llvm-jit, or image [default: target-specific]
-      --jit, --run          Execute directly with the built-in runner
-      --target <TARGET>     Target preset or raw LLVM triple [default: native]
+  -o, --output <PATH>       Output path [default: from the input and emit kind]
+      --emit <KIND>         exe, obj, or jit [default: target-specific]
+      --jit, --run          Compile for the host and run it in this process
+      --target <TARGET>     Target preset or raw target triple [default: native]
       --list-targets        Print built-in target presets
       --tape-size <CELLS>   Tape cell count [default: 30000]
       --bounds-check        Trap on out-of-range tape access
       --freestanding        Emit a callable Brainfuck payload for freestanding runtimes
       --entry <SYMBOL>      Freestanding entry function [default: bf_main]
-      --putchar-symbol <S>  Freestanding output hook: void (i8) [default: bf_putchar]
-      --getchar-symbol <S>  Freestanding input hook: i32 () [default: bf_getchar]
-      --opt-level <LEVEL>   clang optimization level: 0, 1, 2, 3, s, or z [default: 2]
-      --cc <PATH>           clang-compatible LLVM driver [default: clang]
-      --lli <PATH>          LLVM lli executable for --emit llvm-jit [default: lli]
-      --keep-ll             Keep generated LLVM IR beside the output
+      --putchar-symbol <S>  Freestanding output hook: void (u8) [default: bf_putchar]
+      --getchar-symbol <S>  Freestanding input hook: int () [default: bf_getchar]
+      --opt-level <LEVEL>   0, 1, 2, 3, s, or z [default: 2]
+      --linker <PATH>       C compiler driver used to link executables
+      --keep-object         Keep the generated object file beside the output
   -h, --help                Print help
       --version             Print version
 
+Code generation is built in, so --emit obj and --run need no external tools.
+Only --emit exe does, to link against the C runtime.
+
 Commands:
-  tools doctor              Inspect local compiler tools and target support"#
+  tools doctor              Inspect the backend, the linker, and target support"#
     );
 }
 
@@ -421,9 +418,7 @@ Usage:
   hypothalamus tools doctor [OPTIONS]
 
 Options:
-      --cc <PATH>           clang-compatible LLVM driver [default: clang]
-      --lli <PATH>          LLVM lli executable for --emit llvm-jit [default: lli]
-      --gba-gcc <PATH>      devkitARM GCC fallback for GBA images
+      --linker <PATH>       C compiler driver used to link executables
   -h, --help                Print help"#
     );
 }
@@ -464,30 +459,24 @@ mod tests {
 
     #[test]
     fn parses_tools_doctor_action() {
-        let action = parse_args(
-            [
-                "tools",
-                "doctor",
-                "--cc",
-                "/tools/clang",
-                "--lli=/tools/lli",
-                "--gba-gcc",
-                "/tools/arm-none-eabi-gcc",
-            ]
-            .map(String::from),
-        )
-        .expect("valid tools doctor args");
+        let action = parse_args(["tools", "doctor", "--linker", "/tools/cc"].map(String::from))
+            .expect("valid tools doctor args");
 
         let Action::ToolsDoctor(config) = action else {
             panic!("expected tools doctor action");
         };
 
-        assert_eq!(config.clang, "/tools/clang");
-        assert_eq!(config.lli, "/tools/lli");
-        assert_eq!(
-            config.gba_gcc,
-            Some(PathBuf::from("/tools/arm-none-eabi-gcc"))
-        );
+        assert_eq!(config.linker.as_deref(), Some("/tools/cc"));
+    }
+
+    #[test]
+    fn defaults_to_a_hosted_executable() {
+        let config = run_config(&["hello.bf"]);
+
+        assert_eq!(config.emit, EmitKind::Executable);
+        assert_eq!(config.target.name(), "native");
+        assert_eq!(config.opt_level, OptLevel::Speed);
+        assert!(!config.target.is_freestanding());
     }
 
     #[test]
@@ -505,54 +494,11 @@ mod tests {
     }
 
     #[test]
-    fn gba_target_defaults_to_image() {
-        let config = run_config(&["--target", "gba", "examples/hello.bf"]);
-
-        assert_eq!(config.emit, EmitKind::Image);
-        assert_eq!(config.target.name(), "gba");
-        assert_eq!(config.target.llvm_triple(), Some("thumbv4t-none-eabi"));
-        assert!(config.target.is_freestanding());
-    }
-
-    #[test]
-    fn gba_target_allows_explicit_object_output() {
-        let config = run_config(&["--target", "gba", "--emit", "obj", "examples/hello.bf"]);
+    fn x86_64_none_target_defaults_to_object_output() {
+        let config = run_config(&["--target", "x86_64-none", "examples/hello.bf"]);
 
         assert_eq!(config.emit, EmitKind::Object);
-        assert_eq!(config.target.name(), "gba");
-    }
-
-    #[test]
-    fn nds_arm9_target_defaults_to_object_output() {
-        let config = run_config(&["--target", "nds-arm9", "examples/hello.bf"]);
-
-        assert_eq!(config.emit, EmitKind::Object);
-        assert_eq!(config.target.name(), "nds-arm9");
-        assert_eq!(config.target.llvm_triple(), Some("armv5te-none-eabi"));
-        assert!(config.target.is_freestanding());
-    }
-
-    #[test]
-    fn parses_gba_tool_overrides() {
-        let config = run_config(&[
-            "--target",
-            "gba",
-            "--gba-gcc",
-            "/tools/gcc",
-            "--gba-objcopy=/tools/objcopy",
-            "examples/hello.bf",
-        ]);
-
-        assert_eq!(config.gba_gcc, Some(PathBuf::from("/tools/gcc")));
-        assert_eq!(config.gba_objcopy, Some(PathBuf::from("/tools/objcopy")));
-    }
-
-    #[test]
-    fn i386_target_allows_explicit_llvm_ir() {
-        let config = run_config(&["--target", "i386-none", "--emit", "llvm-ir", "kernel.bf"]);
-
-        assert_eq!(config.emit, EmitKind::LlvmIr);
-        assert_eq!(config.target.llvm_triple(), Some("i386-unknown-none"));
+        assert_eq!(config.target.triple(), Some("x86_64-unknown-none-elf"));
         assert!(config.target.is_freestanding());
     }
 
@@ -561,26 +507,72 @@ mod tests {
         let config = run_config(&["--target", "x86_64-unknown-linux-gnu", "hello.bf"]);
 
         assert_eq!(config.emit, EmitKind::Executable);
-        assert_eq!(
-            config.target.llvm_triple(),
-            Some("x86_64-unknown-linux-gnu")
-        );
+        assert_eq!(config.target.triple(), Some("x86_64-unknown-linux-gnu"));
         assert!(!config.target.is_freestanding());
     }
 
     #[test]
+    fn parses_the_linker_override_and_object_retention() {
+        let config = run_config(&["--linker=/tools/cc", "--keep-object", "hello.bf"]);
+
+        assert_eq!(config.linker.as_deref(), Some("/tools/cc"));
+        assert!(config.keep_object);
+    }
+
+    #[test]
+    fn folds_short_optimization_flags_onto_cranelift_levels() {
+        assert_eq!(run_config(&["-O0", "hello.bf"]).opt_level, OptLevel::None);
+        assert_eq!(run_config(&["-O3", "hello.bf"]).opt_level, OptLevel::Speed);
+        assert_eq!(
+            run_config(&["-Oz", "hello.bf"]).opt_level,
+            OptLevel::SpeedAndSize
+        );
+    }
+
+    #[test]
     fn freestanding_rejects_hosted_executable_output() {
-        let err = parse_args(["--target", "gba", "--emit", "exe", "kernel.bf"].map(String::from))
-            .expect_err("freestanding executable should be rejected");
+        let err =
+            parse_args(["--target", "x86_64-none", "--emit", "exe", "kernel.bf"].map(String::from))
+                .expect_err("freestanding executable should be rejected");
 
         assert!(matches!(err, Error::Usage(message) if message.contains("freestanding runtime")));
     }
 
     #[test]
     fn freestanding_symbol_options_require_freestanding_runtime() {
-        let err = parse_args(["--entry", "kernel_main", "kernel.bf"].map(String::from))
+        let err = parse_args(["--entry", "kernel_main", "hello.bf"].map(String::from))
             .expect_err("freestanding symbol should be rejected in hosted mode");
 
         assert!(matches!(err, Error::Usage(message) if message.contains("freestanding target")));
+    }
+
+    #[test]
+    fn explains_options_the_llvm_backend_used_to_take() {
+        for (arg, expected) in [
+            ("--cc", "--linker"),
+            ("--keep-ll", "--keep-object"),
+            ("--gba-gcc", "32-bit ARM"),
+        ] {
+            let err = parse_args([arg, "clang", "hello.bf"].map(String::from))
+                .expect_err("removed option should be rejected");
+
+            assert!(
+                matches!(&err, Error::Usage(message)
+                    if message.contains("was removed") && message.contains(expected)),
+                "{arg} produced {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_emit_kinds_the_llvm_backend_used_to_take() {
+        for value in ["llvm-ir", "llvm-jit", "asm", "image"] {
+            let err = parse_args(["--emit", value, "hello.bf"].map(String::from))
+                .expect_err("removed emit kind should be rejected");
+
+            assert!(
+                matches!(err, Error::Usage(message) if message.contains("expected exe, obj, or jit"))
+            );
+        }
     }
 }

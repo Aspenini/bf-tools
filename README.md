@@ -5,7 +5,7 @@ Brainfuck tooling monorepo: write real programs, then compile or interpret them.
 | Crate | What |
 | --- | --- |
 | [`cranium-lang`](crates/cranium) | A structured language that compiles **to** Brainfuck |
-| [`hypothalamus`](crates/hypothalamus) | AOT compiler (LLVM) |
+| [`hypothalamus`](crates/hypothalamus) | AOT compiler and JIT (Cranelift) |
 | [`lobe`](crates/lobe) | Interpreter |
 | [`wernicke`](crates/wernicke) | Language server for Cranium |
 | [`trepan`](crates/trepan) | Lifts Brainfuck back into Cranium |
@@ -37,12 +37,12 @@ itself a Brainfuck program:
 ```bash
 # a Brainfuck interpreter, running as Brainfuck
 cranium crates/cranium/examples/bfi.cra -o bfi.bf
-hypothalamus bfi.bf -o bfi --opt-level 1
+hypothalamus bfi.bf -o bfi
 { cat crates/lobe/bf/sierpinski.bf; echo '!'; } | ./bfi
 
 # a Brainfuck compiler, running as Brainfuck
 cranium crates/cranium/examples/lobotomy.cra -o lobotomy.bf
-hypothalamus lobotomy.bf -o lobotomy --opt-level 1
+hypothalamus lobotomy.bf -o lobotomy
 ./lobotomy < crates/lobe/bf/sierpinski.bf > sierpinski.c
 clang -O2 sierpinski.c -o sierpinski && ./sierpinski
 ```

@@ -322,30 +322,34 @@ great deal for the loop-heavy code a compiler emits:
 
 ```bash
 cranium bfi.cra -o bfi.bf
-hypothalamus bfi.bf -o bfi --opt-level 1     # writes bfi.exe on Windows
+hypothalamus bfi.bf -o bfi           # writes bfi.exe on Windows
 ./bfi < sierpinski.bf.txt
 ```
 
 Measured on the examples here, running the same `.bf` both ways:
 
-| program | `.bf` size | `-O1` compile | native run | interpreted |
+| program | `.bf` size | compile | native run | interpreted |
 | --- | --- | --- | --- | --- |
-| `life.cra` | 304 KB | 41 s | 0.62 s | 2.0 s |
-| `bfi.cra` running `sierpinski.bf` | 345 KB | 1.0 s | 0.25 s | 172 s |
+| `life.cra` | 303 KB | 0.40 s | 0.055 s | 2.3 s |
+| `bfi.cra` running `sierpinski.bf` | 344 KB | 0.23 s | 0.49 s | 208 s |
 
-Optimization is where the win is, and it is also where the time goes: LLVM's
-optimizer is superlinear in function size, and everything a Cranium program
-does lands in one function.
+Everything a Cranium program does lands in one enormous function, which used to
+make compiling the slowest step by far. Cranelift's optimizer is close to
+linear in function size, so it no longer is, and the default optimization level
+is the right one even for a program of a few hundred kilobytes. `--opt-level 0`
+roughly halves the compile time and costs about 10x at run time.
 
-- **`--opt-level 0`** compiles almost instantly and runs at about interpreter
-  speed. Use it while iterating.
-- **`--opt-level 1`** is the sweet spot for finished programs, and can take
-  minutes on a program of a few hundred kilobytes.
-
-If `clang` is not on your `PATH`, point at it with `--cc`:
+Only the final link needs a tool that is not built in. If no C compiler driver
+is on your `PATH`, point at one with `--linker`:
 
 ```bash
-hypothalamus life.bf -o life --cc "C:/Program Files/LLVM/bin/clang.exe"
+hypothalamus life.bf -o life --linker "C:/Program Files/LLVM/bin/clang.exe"
+```
+
+Or skip the link entirely and let `hypothalamus` run the program itself:
+
+```bash
+hypothalamus life.bf --run
 ```
 
 ## Tape size

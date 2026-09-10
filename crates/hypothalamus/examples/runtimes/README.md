@@ -1,7 +1,7 @@
 # Freestanding Runtime Notes
 
-Most freestanding Hypothalamus target presets emit linkable Brainfuck payloads.
-Complete-image targets also provide a tiny built-in runtime.
+`--freestanding` emits a linkable Brainfuck payload instead of a hosted `main`,
+for a runtime you provide.
 
 The stable freestanding ABI is:
 
@@ -12,78 +12,42 @@ void bf_putchar(unsigned char byte);
 int bf_getchar(void); /* return -1 for EOF / no input */
 ```
 
-At `--opt-level 1` and above the compiler recognises the run of stores that
-clears the tape and rewrites it as a `memset`, so a freestanding runtime has to
-provide `memset` as well — and on ARM the EABI spelling of it, `__aeabi_memclr`
-and friends. The built-in GBA runtime already does; a runtime of your own will
-not link without them.
+Rename any of the three with `--entry`, `--putchar-symbol`, and
+`--getchar-symbol`.
 
-## x86 Bare Metal
+The generated payload calls nothing else. The tape is a zero-initialized block
+in the object's own BSS, and the code contains no libcalls, so a runtime does
+not have to supply `memset` or any other compiler helper.
 
-Build a payload object:
+Objects are position-dependent, on the assumption that a freestanding runtime
+places the payload itself rather than relocating it through a global offset
+table.
 
-```sh
+## Building a payload
+
+```bash
 hypothalamus --target x86_64-none examples/hello.bf -o hello_bf.o
-hypothalamus --target i386-none examples/hello.bf -o hello_bf.o
 ```
 
-Your runtime owns CPU setup, stack setup, linker script, and output hardware.
-For a tiny serial-only smoke test, provide `bf_putchar` as a byte write to the
-serial port and `bf_getchar` as `return -1;` until input exists.
+The `x86_64-none` preset is `x86_64-unknown-none-elf` with the freestanding ABI
+and object output by default. Any other Cranelift target works the same way,
+with no toolchain for that target installed:
 
-## Nintendo DS ARM9
-
-Build an ARM9 payload object:
-
-```sh
-hypothalamus --target nds-arm9 examples/hello.bf -o hello_arm9.o
+```bash
+hypothalamus --target aarch64-unknown-none-elf --freestanding examples/hello.bf -o hello_bf.o
+hypothalamus --target riscv64-unknown-none-elf --freestanding examples/hello.bf -o hello_bf.o
 ```
 
-The `nds-arm9` preset selects `armv5te-none-eabi` with ARM946E-S CPU flags and
-emits a freestanding object by default. It does not build a complete `.nds`
-image yet; provide your own ARM7/runtime layer, linker script, and packaging.
+A bare `-none` triple does not say which object format to write, so name one:
+`aarch64-unknown-none-elf`, not `aarch64-unknown-none`.
 
-`examples/runtimes/nds-arm9/` contains a minimal startup, linker script, and
-runtime that links a Hypothalamus payload into an ARM9 ELF. The example stores
-output bytes in memory and returns EOF for input; it is link groundwork, not a
-complete DS program.
+Cranelift has backends for x86-64, aarch64, riscv64, and s390x. It has no
+32-bit x86 or ARM backend, so 32-bit embedded targets are out of reach.
 
-For devkitPro setup, see:
+## Writing the runtime
 
-- <https://devkitpro.org/wiki/Getting_Started/Nintendo_DS>
-- <https://devkitpro.org/wiki/Getting_Started/devkitPPC>
-
-## Game Boy Advance
-
-Build a complete ROM:
-
-```sh
-hypothalamus --target gba examples/hello.bf -o hello.gba
-```
-
-The `gba` preset selects `thumbv4t-none-eabi` with ARM7TDMI/Thumb flags, links
-a tiny startup/runtime layer, extracts loadable ROM segments from the linked
-ELF, and writes a valid GBA header.
-
-The built-in runtime drives the Mode 3 framebuffer as a 40x20 text console.
-Printable ASCII renders from a built-in 5x7 font; newline, carriage return,
-tab, backspace and form feed do what a terminal would; lines wrap at the right
-edge; and reaching the bottom scrolls the screen by DMA rather than wiping it.
-A byte outside the printable range draws as a box, so nothing is silently
-dropped.
-
-`bf_getchar` returns `-1`, so input instructions see EOF. Use object output for
-a custom runtime:
-
-```sh
-hypothalamus --target gba --emit obj examples/hello.bf -o hello_gba.o
-```
-
-GBA ROM builds prefer LLVM tools: `clang` for compilation and `ld.lld` for
-linking. Hypothalamus checks `PATH` and tools placed beside the configured
-`clang`, which keeps future bundled binary releases simple.
-
-If `ld.lld` is unavailable, Hypothalamus falls back to devkitARM GCC for the
-startup/runtime link step. It checks `PATH`, then `/opt/devkitpro/devkitARM/bin`.
-Use `--gba-gcc <path>` to override discovery. `--gba-objcopy` is still accepted
-for compatibility, but normal ROM builds no longer require objcopy.
+Your runtime owns CPU setup, stack setup, the linker script, and the output
+hardware. For a serial-only smoke test, make `bf_putchar` a byte write to the
+serial port and `bf_getchar` `return -1;` until input exists. Then link your
+startup and runtime objects with the payload, and call `bf_main` once
+everything it needs is up.

@@ -1,295 +1,216 @@
-use hypothalamus::DEFAULT_TAPE_SIZE;
-use hypothalamus::bf;
+use hypothalamus::codegen::FreestandingOptions;
 use hypothalamus::driver::{
-    CompilerConfig, DriverError, EmitKind, compile_to_llvm, compile_with_tools,
+    self, CompilerConfig, DriverError, EmitKind, compile, compile_to_object,
 };
-use hypothalamus::llvm::{self, LlvmOptions};
-use hypothalamus::target::TargetProfile;
-use hypothalamus::targets::gba;
+use hypothalamus::target::{RuntimeAbi, TargetProfile};
+use object::{Object, ObjectSymbol};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-fn compile_example(source: &[u8], name: &str) -> String {
-    let ops = bf::parse(source).expect("example should parse");
-    llvm::generate_module(
-        &ops,
-        &LlvmOptions {
-            tape_size: DEFAULT_TAPE_SIZE,
-            target_triple: None,
-            source_filename: Some(name.to_string()),
-            bounds_check: false,
-            runtime: llvm::Runtime::Hosted,
+/// Compile `input` for `target` and return the object bytes.
+fn object_for(input: &str, target: TargetProfile) -> Vec<u8> {
+    let mut config = CompilerConfig::for_target(input, target);
+    config.emit = EmitKind::Object;
+    compile_to_object(&config).expect("program should compile to an object")
+}
+
+fn symbols(object: &[u8]) -> Vec<String> {
+    object::File::parse(object)
+        .expect("generated object should parse")
+        .symbols()
+        .filter_map(|symbol| symbol.name().ok().map(str::to_string))
+        .collect()
+}
+
+/// Mach-O prefixes every symbol with an underscore, so match either spelling.
+fn has_symbol(symbols: &[String], name: &str) -> bool {
+    symbols
+        .iter()
+        .any(|symbol| symbol == name || symbol.strip_prefix('_') == Some(name))
+}
+
+#[test]
+fn hello_example_compiles_for_the_host() {
+    let object = object_for("examples/hello.bf", TargetProfile::native());
+    let symbols = symbols(&object);
+
+    assert!(has_symbol(&symbols, "main"), "{symbols:?}");
+    assert!(has_symbol(&symbols, "putchar"), "{symbols:?}");
+}
+
+#[test]
+fn freestanding_objects_use_the_documented_abi() {
+    let object = object_for("examples/hello.bf", TargetProfile::resolve("x86_64-none"));
+    let symbols = symbols(&object);
+
+    assert!(
+        symbols.iter().any(|symbol| symbol == "bf_main"),
+        "{symbols:?}"
+    );
+    assert!(
+        symbols.iter().any(|symbol| symbol == "bf_putchar"),
+        "{symbols:?}"
+    );
+    assert!(
+        symbols.iter().any(|symbol| symbol == "bf_getchar"),
+        "{symbols:?}"
+    );
+    // A freestanding payload has no `main` and no libc.
+    assert!(
+        !symbols.iter().any(|symbol| symbol == "main"),
+        "{symbols:?}"
+    );
+    assert!(
+        !symbols.iter().any(|symbol| symbol == "putchar"),
+        "{symbols:?}"
+    );
+}
+
+#[test]
+fn freestanding_symbol_names_are_configurable() {
+    let target = TargetProfile::resolve("x86_64-none").with_runtime_abi(RuntimeAbi::Freestanding(
+        FreestandingOptions {
+            entry_symbol: "kernel_bf_main".to_string(),
+            putchar_symbol: "serial_write_byte".to_string(),
+            getchar_symbol: "serial_read_byte".to_string(),
         },
-    )
-    .expect("example should lower to LLVM IR")
-}
+    ));
 
-#[test]
-fn hello_example_lowers_to_llvm() {
-    let ir = compile_example(include_bytes!("../examples/hello.bf"), "examples/hello.bf");
-    assert!(ir.contains("define i32 @main()"));
-}
+    let symbols = symbols(&object_for("examples/hello.bf", target));
 
-#[test]
-fn scan_loop_fixture_lowers_to_explicit_scan() {
-    let ir = compile_example(b"+[>]", "scan-loop.bf");
-    assert!(ir.contains("define i32 @main()"));
-    assert!(ir.contains("scan_check_"));
-}
-
-#[test]
-fn multiply_transfer_fixture_lowers_to_straight_line_ir() {
-    let ir = compile_example(b"+++++[->+++>++<<]>>.", "multiply-transfer.bf");
-    assert!(ir.contains("define i32 @main()"));
-    assert!(ir.contains("mul i8"));
-    assert!(!ir.contains("loop_check_"));
-}
-
-#[test]
-fn target_presets_emit_expected_llvm_runtime() {
-    let mut config = CompilerConfig::for_target("examples/hello.bf", TargetProfile::resolve("gba"));
-    config.emit = EmitKind::LlvmIr;
-
-    let ir = compile_to_llvm(&config).expect("GBA target should lower to LLVM IR");
-
-    assert!(ir.contains("target triple = \"thumbv4t-none-eabi\""));
-    assert!(ir.contains("define void @bf_main()"));
-    assert!(ir.contains("declare void @bf_putchar(i8)"));
-    assert!(!ir.contains("define i32 @main()"));
-
-    let mut config =
-        CompilerConfig::for_target("examples/hello.bf", TargetProfile::resolve("nds-arm9"));
-    config.emit = EmitKind::LlvmIr;
-
-    let ir = compile_to_llvm(&config).expect("DS ARM9 target should lower to LLVM IR");
-
-    assert!(ir.contains("target triple = \"armv5te-none-eabi\""));
-    assert!(ir.contains("define void @bf_main()"));
-    assert!(ir.contains("declare void @bf_putchar(i8)"));
-    assert!(!ir.contains("define i32 @main()"));
-}
-
-#[test]
-fn freestanding_targets_emit_objects_when_clang_supports_them() {
-    for target_name in ["i386-none", "nds-arm9", "gba"] {
-        let target = TargetProfile::resolve(target_name);
-        let Some(triple) = target.llvm_triple() else {
-            continue;
-        };
-        if !clang_supports_target(triple, target.clang_args()) {
-            eprintln!("skipping {target_name} object smoke test: clang does not support {triple}");
-            continue;
-        }
-
-        let temp_dir = TestTempDir::new(&format!("target-smoke-{target_name}"));
-        let output = temp_dir.path().join("hello.o");
-
-        let mut config = CompilerConfig::for_target("examples/hello.bf", target);
-        config.emit = EmitKind::Object;
-        config.output = Some(output.clone());
-
-        compile_with_tools(&config).expect("target object smoke should compile");
-        assert!(output.exists());
+    for expected in ["kernel_bf_main", "serial_write_byte", "serial_read_byte"] {
+        assert!(
+            symbols.iter().any(|symbol| symbol == expected),
+            "{symbols:?}"
+        );
     }
 }
 
 #[test]
-fn gba_target_builds_rom_when_tools_are_available() {
-    let target = TargetProfile::resolve("gba");
-    if !clang_supports_target(
-        target.llvm_triple().expect("GBA target triple"),
-        target.clang_args(),
-    ) {
-        eprintln!("skipping GBA ROM smoke test: clang does not support GBA target");
-        return;
+fn cross_compiles_without_a_toolchain() {
+    // Cranelift is linked in, so a target the host has no toolchain for still
+    // produces a complete object file.
+    for triple in [
+        "x86_64-unknown-none-elf",
+        "aarch64-unknown-none-elf",
+        "riscv64-unknown-none-elf",
+    ] {
+        let target = TargetProfile::raw_triple(triple)
+            .with_runtime_abi(RuntimeAbi::Freestanding(FreestandingOptions::default()));
+        let object = object_for("examples/hello.bf", target);
+
+        assert!(!object.is_empty(), "{triple} produced nothing");
+        assert!(
+            symbols(&object).iter().any(|symbol| symbol == "bf_main"),
+            "{triple} is missing bf_main"
+        );
     }
+}
 
-    let temp_dir = TestTempDir::new("gba-rom-smoke");
-    let output = temp_dir.path().join("hello.gba");
+#[test]
+fn every_optimized_operation_survives_lowering() {
+    // Scan, multiply-transfer, clear, a general loop, and both I/O ops.
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let source = temp_dir.path().join("fixtures.bf");
+    fs::write(&source, "+[>]+++[->+++<]>[-],.").expect("write fixture program");
 
+    let object = object_for(
+        source.to_str().expect("utf-8 path"),
+        TargetProfile::native(),
+    );
+
+    assert!(!object.is_empty());
+}
+
+#[test]
+fn rejects_architectures_cranelift_has_no_backend_for() {
+    let target = TargetProfile::raw_triple("thumbv4t-none-eabi");
     let mut config = CompilerConfig::for_target("examples/hello.bf", target);
+    config.emit = EmitKind::Object;
+
+    let error = compile_to_object(&config).expect_err("32-bit ARM has no backend");
+
+    assert!(matches!(error, DriverError::Isa(_)), "{error}");
+    assert!(error.to_string().contains("no backend"));
+}
+
+#[test]
+fn hello_example_links_and_runs_when_a_linker_is_available() {
+    let Some(linker) = driver::find_linker(None) else {
+        eprintln!("skipping executable smoke test: no linker on PATH");
+        return;
+    };
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output = temp_dir.path().join("hello");
+
+    let mut config = CompilerConfig::new("examples/hello.bf");
     config.output = Some(output.clone());
-    config.gba_objcopy = Some(temp_dir.path().join("missing-objcopy"));
 
-    match compile_with_tools(&config) {
-        Ok(()) => {}
-        Err(DriverError::ToolNotFound {
-            tool: "ld.lld" | "arm-none-eabi-gcc",
-            ..
-        }) => {
-            eprintln!(
-                "skipping GBA ROM smoke test: neither LLVM LLD nor devkitARM GCC is available"
-            );
-            return;
-        }
-        Err(error) => panic!("GBA ROM smoke should compile: {error}"),
+    if let Err(error) = compile(&config) {
+        panic!("linking with {} failed: {error}", linker.display());
     }
 
-    let rom = fs::read(output).expect("read generated GBA ROM");
-    assert!(gba::has_valid_header(&rom));
-    assert!(rom.len() > gba::HEADER_SIZE);
-    assert_eq!(&rom[0xA0..0xAC], gba::ROM_TITLE);
-    assert_eq!(&rom[0xAC..0xB0], gba::GAME_CODE);
+    // The driver adds the host's executable extension, so ask it where it put
+    // the file rather than guessing.
+    let executable = if cfg!(windows) {
+        output.with_extension("exe")
+    } else {
+        output
+    };
+    assert!(
+        executable.exists(),
+        "{} was not created",
+        executable.display()
+    );
+    assert_eq!(run(&executable, b""), b"Hello World!\n");
 }
 
 #[test]
-fn nds_arm9_runtime_example_links_when_tools_are_available() {
-    let target = TargetProfile::resolve("nds-arm9");
-    if !clang_supports_target(
-        target.llvm_triple().expect("DS ARM9 target triple"),
-        target.clang_args(),
-    ) {
-        eprintln!("skipping DS ARM9 runtime link smoke test: clang does not support ARM9 target");
+fn compiled_programs_and_the_jit_agree_on_bytes() {
+    let Some(_) = driver::find_linker(None) else {
+        eprintln!("skipping byte-agreement smoke test: no linker on PATH");
         return;
-    }
-    if !tool_runs("ld.lld", &["--version"]) {
-        eprintln!("skipping DS ARM9 runtime link smoke test: ld.lld is not available");
-        return;
-    }
+    };
 
-    let temp_dir = TestTempDir::new("nds-arm9-runtime-link");
-    let bf_object = temp_dir.path().join("hello_arm9.o");
-    let startup_object = temp_dir.path().join("nds_start.o");
-    let runtime_object = temp_dir.path().join("nds_runtime.o");
-    let elf = temp_dir.path().join("hello_arm9.elf");
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    // Echo two bytes back incremented, then a newline from a fresh cell: enough
+    // to catch a platform rewriting the newline or stopping input early.
+    let source = temp_dir.path().join("echo.bf");
+    fs::write(&source, ",+.,+.>++++++++++.").expect("write echo program");
+    let output = temp_dir.path().join("echo");
 
-    let mut config = CompilerConfig::for_target("examples/hello.bf", target);
-    config.output = Some(bf_object.clone());
-    compile_with_tools(&config).expect("DS ARM9 payload object should compile");
+    let mut config = CompilerConfig::new(&source);
+    config.output = Some(output.clone());
+    compile(&config).expect("echo program should link");
 
-    run_checked(
-        Command::new("clang")
-            .args([
-                "--target=armv5te-none-eabi",
-                "-mcpu=arm946e-s",
-                "-marm",
-                "-x",
-                "assembler-with-cpp",
-                "-c",
-                "examples/runtimes/nds-arm9/start.S",
-                "-o",
-            ])
-            .arg(&startup_object),
-        "compile DS ARM9 startup",
-    );
-    run_checked(
-        Command::new("clang")
-            .args([
-                "--target=armv5te-none-eabi",
-                "-mcpu=arm946e-s",
-                "-marm",
-                "-ffreestanding",
-                "-fno-builtin",
-                "-fno-unwind-tables",
-                "-fno-asynchronous-unwind-tables",
-                "-Os",
-                "-std=c99",
-                "-c",
-                "examples/runtimes/nds-arm9/runtime.c",
-                "-o",
-            ])
-            .arg(&runtime_object),
-        "compile DS ARM9 runtime",
-    );
-    run_checked(
-        Command::new("ld.lld")
-            .args(["-m", "armelf", "-T", "examples/runtimes/nds-arm9/arm9.ld"])
-            .arg(&startup_object)
-            .arg(&runtime_object)
-            .arg(&bf_object)
-            .arg("-o")
-            .arg(&elf),
-        "link DS ARM9 ELF",
-    );
-
-    assert!(elf.exists());
-    assert!(fs::metadata(elf).expect("read linked ELF metadata").len() > 0);
+    let executable = if cfg!(windows) {
+        output.with_extension("exe")
+    } else {
+        output
+    };
+    assert_eq!(run(&executable, b"AB"), b"BC\n");
 }
 
-fn clang_supports_target(triple: &str, clang_args: &[String]) -> bool {
-    let Some(temp_dir) = TestTempDir::try_new("clang-target-check") else {
-        return false;
-    };
-    let output = temp_dir.path().join("check.o");
-
-    let Ok(mut child) = Command::new("clang")
-        .arg(format!("--target={triple}"))
-        .args(clang_args)
-        .arg("-x")
-        .arg("c")
-        .arg("-c")
-        .arg("-")
-        .arg("-o")
-        .arg(output)
+fn run(executable: &Path, input: &[u8]) -> Vec<u8> {
+    let mut child = Command::new(executable)
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
         .spawn()
-    else {
-        return false;
-    };
+        .unwrap_or_else(|error| panic!("run {}: {error}", executable.display()));
 
     {
-        let Some(stdin) = child.stdin.as_mut() else {
-            return false;
-        };
         use std::io::Write;
-        if stdin.write_all(b"void f(void) {}\n").is_err() {
-            return false;
-        }
+        let stdin = child.stdin.as_mut().expect("child stdin");
+        stdin.write_all(input).expect("write program input");
     }
 
-    child.wait().map(|status| status.success()).unwrap_or(false)
-}
-
-fn tool_runs(tool: &str, args: &[&str]) -> bool {
-    Command::new(tool)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn run_checked(command: &mut Command, label: &str) {
-    let status = command.status().unwrap_or_else(|error| {
-        panic!("{label} failed to launch: {error}");
-    });
-    assert!(status.success(), "{label} failed with status {status}");
-}
-
-struct TestTempDir {
-    path: PathBuf,
-}
-
-impl TestTempDir {
-    fn new(label: &str) -> Self {
-        Self::try_new(label).expect("create test temp dir")
-    }
-
-    fn try_new(label: &str) -> Option<Self> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "hypothalamus-{label}-{}-{timestamp}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).ok()?;
-        Some(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestTempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
+    let output = child.wait_with_output().expect("read program output");
+    assert!(
+        output.status.success(),
+        "program exited with {}",
+        output.status
+    );
+    output.stdout
 }

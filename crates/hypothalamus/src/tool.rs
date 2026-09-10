@@ -1,3 +1,5 @@
+//! Discovering and running the one external tool that is left: a linker.
+
 use std::env;
 use std::ffi::OsStr;
 use std::io;
@@ -26,30 +28,9 @@ pub(crate) fn run_captured(mut command: Command) -> io::Result<Option<CapturedTo
     }))
 }
 
-pub(crate) fn find_tool(
-    override_path: Option<&Path>,
-    name: &str,
-    fallback_dir: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(path) = override_path {
-        return Some(path.to_path_buf());
-    }
-
-    find_on_path(name).or_else(|| executable_in(fallback_dir?, OsStr::new(name)))
-}
-
 pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     env::split_paths(&path).find_map(|dir| executable_in(&dir, OsStr::new(name)))
-}
-
-pub(crate) fn find_sibling_tool(driver: &str, candidates: &[&str]) -> Option<PathBuf> {
-    let driver_path = resolve_command_path(driver)?;
-    let dir = driver_path.parent()?;
-
-    candidates
-        .iter()
-        .find_map(|candidate| executable_in(dir, OsStr::new(candidate)))
 }
 
 pub(crate) fn resolve_command_path(command: &str) -> Option<PathBuf> {
@@ -64,7 +45,7 @@ pub(crate) fn resolve_command_path(command: &str) -> Option<PathBuf> {
 /// Look for the executable `name` in `dir`.
 ///
 /// Windows leaves `.exe` off a command name but not off the file on disk, so a
-/// tool invoked as `ld.lld` is `ld.lld.exe` there. `Command` appends the
+/// tool invoked as `clang` is `clang.exe` there. `Command` appends the
 /// extension itself when it runs something; discovery has to do it by hand, or
 /// an installed toolchain looks missing.
 fn executable_in(dir: &Path, name: &OsStr) -> Option<PathBuf> {

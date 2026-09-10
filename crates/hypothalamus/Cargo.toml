@@ -1,20 +1,33 @@
 [package]
 name = "hypothalamus"
-version = "0.6.1"
+version = "0.7.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-description = "An optimizing Brainfuck AOT compiler with an LLVM IR backend"
+description = "An optimizing Brainfuck AOT compiler and JIT with a Cranelift backend"
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
 documentation = "https://docs.rs/hypothalamus"
-keywords = ["brainfuck", "compiler", "llvm", "aot"]
+keywords = ["brainfuck", "compiler", "cranelift", "jit", "aot"]
 categories = ["command-line-utilities", "compilers"]
 
 [dependencies]
+# Every backend, not just the host's: with the code generator linked in, any
+# host can emit an object for any target Cranelift knows, and that costs about
+# a second of build time.
+cranelift-codegen = { version = "0.135", features = ["all-arch"] }
+cranelift-frontend = "0.135"
+cranelift-jit = "0.135"
+cranelift-module = "0.135"
+cranelift-native = "0.135"
+cranelift-object = "0.135"
+target-lexicon = "0.13"
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.10"
+# Reading symbols back out of a generated object is how the freestanding ABI
+# is checked; this is already in the tree behind cranelift-object.
+object = "0.39"

@@ -1,22 +1,33 @@
-//! Compiler driver types and tool invocation helpers.
+//! Compiler-driver configuration and output emission.
 //!
 //! This module contains the reusable policy that the command-line binary uses
-//! after CLI parsing: source loading, LLVM generation, output path selection,
-//! and optional invocation of external LLVM tools.
+//! after CLI parsing: source loading, Cranelift code generation, output path
+//! selection, and the one external tool that is still unavoidable — a linker,
+//! and only when the requested output is an executable.
 
 use crate::DEFAULT_TAPE_SIZE;
 use crate::bf;
-use crate::llvm::{self, LlvmOptions};
-use crate::runner;
-use crate::target::{TargetImageFormat, TargetProfile};
-use crate::targets;
+use crate::codegen::{self, CodegenError, CodegenOptions};
+use crate::isa::{self, IsaError, IsaOptions};
+use crate::jit::{self, JitError};
+use crate::target::TargetProfile;
 use crate::tool;
+use cranelift_module::{ModuleError, default_libcall_names};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Commands tried, in order, when no linker is configured.
+///
+/// These are all C compiler drivers rather than bare linkers: a hosted
+/// Brainfuck program calls `putchar` and `getchar`, so the link needs the C
+/// runtime and its startup files, and a cc driver is what knows where those
+/// live on any given system.
+pub const LINKER_CANDIDATES: &[&str] = &["cc", "clang", "gcc"];
 
 /// Output kind requested from the compiler driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,20 +38,8 @@ pub enum EmitKind {
     /// Compile to a relocatable object file.
     Object,
 
-    /// Compile to target assembly.
-    Assembly,
-
-    /// Emit textual LLVM IR.
-    LlvmIr,
-
-    /// Execute the program directly with Hypothalamus' built-in runner.
+    /// Compile for the host and run the result in this process.
     Jit,
-
-    /// Execute generated LLVM IR through `lli`.
-    LlvmJit,
-
-    /// Build a complete target image, such as a ROM.
-    Image,
 }
 
 impl EmitKind {
@@ -49,11 +48,7 @@ impl EmitKind {
         match value {
             "exe" | "executable" => Some(Self::Executable),
             "obj" | "object" => Some(Self::Object),
-            "asm" | "assembly" => Some(Self::Assembly),
-            "llvm-ir" | "ll" => Some(Self::LlvmIr),
             "jit" | "run" => Some(Self::Jit),
-            "llvm-jit" | "lli" => Some(Self::LlvmJit),
-            "image" | "rom" => Some(Self::Image),
             _ => None,
         }
     }
@@ -63,60 +58,44 @@ impl EmitKind {
         match self {
             Self::Executable => "exe",
             Self::Object => "obj",
-            Self::Assembly => "asm",
-            Self::LlvmIr => "llvm-ir",
             Self::Jit => "jit",
-            Self::LlvmJit => "llvm-jit",
-            Self::Image => "image",
         }
     }
 }
 
-/// LLVM optimization level passed to the external LLVM driver.
+/// Optimization level Cranelift compiles at.
+///
+/// Cranelift offers three levels rather than the six an LLVM driver does, so
+/// the familiar `-O` spellings are accepted and folded onto the nearest one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptLevel {
-    /// `-O0`
-    Zero,
+    /// No optimization; the fastest possible compile.
+    None,
 
-    /// `-O1`
-    One,
+    /// Optimize for speed.
+    Speed,
 
-    /// `-O2`
-    Two,
-
-    /// `-O3`
-    Three,
-
-    /// `-Os`
-    Size,
-
-    /// `-Oz`
-    SizeMin,
+    /// Optimize for speed, preferring smaller code when it is a close call.
+    SpeedAndSize,
 }
 
 impl OptLevel {
     /// Parse a CLI/API optimization level.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "0" => Some(Self::Zero),
-            "1" => Some(Self::One),
-            "2" => Some(Self::Two),
-            "3" => Some(Self::Three),
-            "s" | "S" | "size" => Some(Self::Size),
-            "z" | "Z" | "size-min" => Some(Self::SizeMin),
+            "0" | "none" => Some(Self::None),
+            "1" | "2" | "3" | "speed" => Some(Self::Speed),
+            "s" | "S" | "z" | "Z" | "size" | "speed-and-size" => Some(Self::SpeedAndSize),
             _ => None,
         }
     }
 
-    /// Return the `clang` optimization flag for this level.
-    pub fn clang_arg(self) -> &'static str {
+    /// Return the Cranelift `opt_level` setting for this level.
+    pub fn cranelift_setting(self) -> &'static str {
         match self {
-            Self::Zero => "-O0",
-            Self::One => "-O1",
-            Self::Two => "-O2",
-            Self::Three => "-O3",
-            Self::Size => "-Os",
-            Self::SizeMin => "-Oz",
+            Self::None => "none",
+            Self::Speed => "speed",
+            Self::SpeedAndSize => "speed_and_size",
         }
     }
 }
@@ -134,7 +113,7 @@ pub struct CompilerConfig {
     /// Requested output kind.
     pub emit: EmitKind,
 
-    /// Target profile controlling LLVM target, runtime ABI, and target flags.
+    /// Target profile controlling the target triple and runtime ABI.
     pub target: TargetProfile,
 
     /// Number of byte cells allocated in the generated tape.
@@ -143,26 +122,16 @@ pub struct CompilerConfig {
     /// Emit runtime traps before out-of-range tape access.
     pub bounds_check: bool,
 
-    /// LLVM optimization level passed to `clang`.
+    /// Optimization level Cranelift compiles at.
     pub opt_level: OptLevel,
 
-    /// `clang`-compatible LLVM driver command.
-    pub clang: String,
-
-    /// LLVM `lli` command for explicit LLVM JIT execution.
-    pub lli: String,
-
-    /// Keep generated LLVM IR beside the final output.
-    pub keep_ll: bool,
-
-    /// Optional `arm-none-eabi-gcc` command for GBA ROM images.
-    pub gba_gcc: Option<PathBuf>,
-
-    /// Optional legacy `arm-none-eabi-objcopy` command for GBA ROM images.
+    /// Linker command used for executables.
     ///
-    /// Current ROM builds extract linked ELF segments internally, so this is
-    /// accepted for compatibility but is not required.
-    pub gba_objcopy: Option<PathBuf>,
+    /// When this is `None`, [`LINKER_CANDIDATES`] are tried in order.
+    pub linker: Option<String>,
+
+    /// Keep the generated object file beside the linked executable.
+    pub keep_object: bool,
 }
 
 impl CompilerConfig {
@@ -181,12 +150,27 @@ impl CompilerConfig {
             target,
             tape_size: DEFAULT_TAPE_SIZE,
             bounds_check: false,
-            opt_level: OptLevel::Two,
-            clang: "clang".to_string(),
-            lli: "lli".to_string(),
-            keep_ll: false,
-            gba_gcc: None,
-            gba_objcopy: None,
+            opt_level: OptLevel::Speed,
+            linker: None,
+            keep_object: false,
+        }
+    }
+
+    fn codegen_options(&self) -> CodegenOptions {
+        CodegenOptions {
+            tape_size: self.tape_size,
+            bounds_check: self.bounds_check,
+            binary_stdio: true,
+            runtime: self.target.runtime_abi().to_codegen_runtime(),
+        }
+    }
+
+    fn isa_options(&self) -> IsaOptions {
+        IsaOptions {
+            opt_level: self.opt_level,
+            // A freestanding runtime owns its own load address and has no
+            // dynamic loader to fill in a global offset table.
+            position_independent: !self.target.is_freestanding(),
         }
     }
 }
@@ -209,8 +193,25 @@ pub enum DriverError {
     /// Brainfuck syntax validation failed.
     Syntax(bf::SyntaxError),
 
-    /// LLVM IR generation failed.
-    Codegen(llvm::CodegenError),
+    /// The target ISA could not be configured.
+    Isa(IsaError),
+
+    /// Cranelift code generation failed.
+    Codegen(CodegenError),
+
+    /// Cranelift rejected the module.
+    ///
+    /// Boxed because `ModuleError` is far larger than every other variant.
+    Module(Box<ModuleError>),
+
+    /// The target triple does not say which object file format to use.
+    UnknownBinaryFormat {
+        /// The triple that was requested.
+        target: String,
+    },
+
+    /// The generated module could not be written as an object file.
+    EmitObject(String),
 
     /// Writing an output or temporary file failed.
     WriteFile {
@@ -221,7 +222,10 @@ pub enum DriverError {
         source: std::io::Error,
     },
 
-    /// Launching an external tool failed.
+    /// No linker could be found for an executable link.
+    LinkerNotFound,
+
+    /// Launching the linker failed.
     RunTool {
         /// Tool command that failed to launch.
         tool: String,
@@ -230,7 +234,7 @@ pub enum DriverError {
         source: std::io::Error,
     },
 
-    /// An external tool exited unsuccessfully.
+    /// The linker exited unsuccessfully.
     ToolFailed {
         /// Tool command that exited unsuccessfully.
         tool: String,
@@ -245,26 +249,8 @@ pub enum DriverError {
         stderr: String,
     },
 
-    /// A target-specific tool could not be found.
-    ToolNotFound {
-        /// Tool command that could not be found.
-        tool: &'static str,
-
-        /// Human-readable install or override hint.
-        hint: &'static str,
-    },
-
-    /// A target image builder could not read or construct its image format.
-    InvalidImage {
-        /// Human-readable image format name.
-        format: &'static str,
-
-        /// Specific validation or construction failure.
-        message: String,
-    },
-
-    /// Direct execution failed in Hypothalamus' built-in runner.
-    Runtime(String),
+    /// Direct execution failed in the Cranelift JIT.
+    Runtime(JitError),
 }
 
 impl fmt::Display for DriverError {
@@ -275,19 +261,28 @@ impl fmt::Display for DriverError {
                 write!(f, "failed to read {}: {source}", path.display())
             }
             Self::Syntax(error) => write!(f, "syntax error: {error}"),
-            Self::Codegen(error) => write!(f, "LLVM code generation failed: {error}"),
+            Self::Isa(error) => write!(f, "{error}"),
+            Self::Codegen(error) => write!(f, "code generation failed: {error}"),
+            Self::Module(error) => write!(f, "code generation failed: {error}"),
+            Self::UnknownBinaryFormat { target } => write!(
+                f,
+                "target `{target}` does not say which object file format to use. \
+                 Name one in the triple, such as `{target}-elf`"
+            ),
+            Self::EmitObject(message) => write!(f, "failed to write object file: {message}"),
             Self::WriteFile { path, source } => {
                 write!(f, "failed to write {}: {source}", path.display())
             }
-            Self::RunTool { tool, source } if tool == "clang" => write!(
+            Self::LinkerNotFound => write!(
                 f,
-                "failed to run `clang`. Install clang or pass --cc <path>: {source}"
+                "failed to find a linker. Tried {}. Install a C toolchain or pass --linker <path>. \
+                 Object output (--emit obj) and direct execution (--run) need no linker",
+                LINKER_CANDIDATES.join(", ")
             ),
-            Self::RunTool { tool, source } if tool == "lli" => write!(
+            Self::RunTool { tool, source } => write!(
                 f,
-                "failed to run `lli`. Install lli or pass --lli <path>: {source}"
+                "failed to run `{tool}`. Install it or pass --linker <path>: {source}"
             ),
-            Self::RunTool { tool, source } => write!(f, "failed to run `{tool}`: {source}"),
             Self::ToolFailed {
                 tool,
                 status,
@@ -303,18 +298,30 @@ impl fmt::Display for DriverError {
                 }
                 Ok(())
             }
-            Self::ToolNotFound { tool, hint } => {
-                write!(f, "failed to find `{tool}`. {hint}")
-            }
-            Self::InvalidImage { format, message } => {
-                write!(f, "failed to build {format} image: {message}")
-            }
-            Self::Runtime(message) => write!(f, "runtime error: {message}"),
+            Self::Runtime(error) => write!(f, "runtime error: {error}"),
         }
     }
 }
 
 impl std::error::Error for DriverError {}
+
+impl From<IsaError> for DriverError {
+    fn from(error: IsaError) -> Self {
+        Self::Isa(error)
+    }
+}
+
+impl From<CodegenError> for DriverError {
+    fn from(error: CodegenError) -> Self {
+        Self::Codegen(error)
+    }
+}
+
+impl From<ModuleError> for DriverError {
+    fn from(error: ModuleError) -> Self {
+        Self::Module(Box::new(error))
+    }
+}
 
 impl DriverError {
     pub(crate) fn tool_failed(tool: impl Into<String>, failure: tool::CapturedToolFailure) -> Self {
@@ -327,58 +334,64 @@ impl DriverError {
     }
 }
 
-/// Read and compile the configured input to textual LLVM IR.
-pub fn compile_to_llvm(config: &CompilerConfig) -> Result<String, DriverError> {
-    let source = fs::read(&config.input).map_err(|source| DriverError::ReadSource {
-        path: config.input.clone(),
-        source,
-    })?;
-    let ops = bf::parse(&source).map_err(DriverError::Syntax)?;
+/// Read and compile the configured input to a relocatable object file.
+///
+/// This is the whole compiler: no external tool is involved, whatever the
+/// target. Only linking the result into an executable needs one.
+pub fn compile_to_object(config: &CompilerConfig) -> Result<Vec<u8>, DriverError> {
+    let ops = parse_input(config)?;
+    let isa = isa::build(config.target.triple(), config.isa_options())?;
 
-    llvm::generate_module(
-        &ops,
-        &LlvmOptions {
-            tape_size: config.tape_size,
-            target_triple: config.target.llvm_triple().map(ToString::to_string),
-            source_filename: Some(config.input.display().to_string()),
-            bounds_check: config.bounds_check,
-            runtime: config.target.runtime_abi().to_llvm_runtime(),
-        },
-    )
-    .map_err(DriverError::Codegen)
-}
-
-/// Compile with the configured output mode and external tools.
-pub fn compile_with_tools(config: &CompilerConfig) -> Result<(), DriverError> {
-    validate_tool_config(config)?;
-
-    if config.emit == EmitKind::Jit {
-        return run_with_builtin_runner(config);
+    // The object writer needs a container format, and a bare `-none` triple
+    // does not imply one. Saying so here beats Cranelift's "binary format is
+    // unknown" from three layers down.
+    if isa.triple().binary_format == target_lexicon::BinaryFormat::Unknown {
+        return Err(DriverError::UnknownBinaryFormat {
+            target: isa.triple().to_string(),
+        });
     }
 
-    let module = compile_to_llvm(config)?;
+    let name = config
+        .input
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "hypothalamus".to_string());
+    let mut module = ObjectModule::new(ObjectBuilder::new(isa, name, default_libcall_names())?);
+
+    codegen::define_program(&mut module, &ops, &config.codegen_options())?;
+
+    module
+        .finish()
+        .emit()
+        .map_err(|error| DriverError::EmitObject(error.to_string()))
+}
+
+/// Compile with the configured output mode, linking or running as requested.
+pub fn compile(config: &CompilerConfig) -> Result<(), DriverError> {
+    validate_config(config)?;
+
+    if config.emit == EmitKind::Jit {
+        return run_in_process(config);
+    }
+
+    let object = compile_to_object(config)?;
     let output = match config.output.clone() {
         Some(path) => with_executable_extension(path, config.emit, &config.target),
         None => default_output_path(&config.input, config.emit, &config.target),
     };
 
     match config.emit {
-        EmitKind::LlvmIr => write_llvm_ir(&output, &module),
-        EmitKind::LlvmJit => run_with_lli(config, &module),
-        EmitKind::Image => match config.target.image_format() {
-            Some(TargetImageFormat::Gba) => targets::gba::build_image(config, &module, &output),
-            None => unreachable!("image target validation should reject missing image builders"),
-        },
-        _ => compile_with_clang(config, &output, &module),
+        EmitKind::Object => write_file(&output, &object),
+        EmitKind::Executable => link_executable(config, &output, &object),
+        EmitKind::Jit => unreachable!("direct execution returns before object emission"),
     }
 }
 
 /// Whether executables for `target` are expected to end in `.exe`.
 ///
-/// A target with no explicit triple compiles for whatever host clang runs on,
-/// so the host decides.
+/// A target with no explicit triple compiles for the host, so the host decides.
 fn wants_exe_extension(target: &TargetProfile) -> bool {
-    match target.llvm_triple() {
+    match target.triple() {
         Some(triple) => triple.contains("windows"),
         None => cfg!(windows),
     }
@@ -412,56 +425,42 @@ pub fn default_output_path(input: &Path, emit: EmitKind, target: &TargetProfile)
                 output.set_extension("out");
             }
         }
-        EmitKind::Object => {
+        EmitKind::Object | EmitKind::Jit => {
             output.set_extension("o");
         }
-        EmitKind::Assembly => {
-            output.set_extension("s");
-        }
-        EmitKind::LlvmIr | EmitKind::Jit | EmitKind::LlvmJit => {
-            output.set_extension("ll");
-        }
-        EmitKind::Image => match target.image_format() {
-            Some(TargetImageFormat::Gba) => {
-                output.set_extension("gba");
-            }
-            None => {
-                output.set_extension("img");
-            }
-        },
     }
 
     output
 }
 
-fn validate_tool_config(config: &CompilerConfig) -> Result<(), DriverError> {
-    if matches!(config.emit, EmitKind::Jit | EmitKind::LlvmJit) && config.output.is_some() {
+fn validate_config(config: &CompilerConfig) -> Result<(), DriverError> {
+    if config.emit == EmitKind::Jit && config.output.is_some() {
         return Err(DriverError::InvalidConfig(
             "--emit jit runs the program directly and does not accept --output".to_string(),
         ));
     }
 
-    if config.output.as_deref() == Some(Path::new("-")) && config.emit != EmitKind::LlvmIr {
+    if config.output.as_deref() == Some(Path::new("-")) {
         return Err(DriverError::InvalidConfig(
-            "--output - writes to stdout and is only supported with --emit llvm-ir".to_string(),
+            "--output - is not supported; every output kind is binary".to_string(),
         ));
     }
 
-    if config.emit == EmitKind::Image && config.target.image_format().is_none() {
+    // The runtime ABI is the more fundamental reason of the two, so it is
+    // reported first: a freestanding target has no I/O for the JIT to supply,
+    // whatever architecture it names.
+    if config.target.is_freestanding()
+        && matches!(config.emit, EmitKind::Executable | EmitKind::Jit)
+    {
         return Err(DriverError::InvalidConfig(format!(
-            "target `{}` does not have a complete-image builder",
+            "target `{}` uses a freestanding runtime and supports --emit obj",
             config.target.name()
         )));
     }
 
-    if config.target.is_freestanding()
-        && matches!(
-            config.emit,
-            EmitKind::Executable | EmitKind::Jit | EmitKind::LlvmJit
-        )
-    {
+    if config.emit == EmitKind::Jit && config.target.triple().is_some() {
         return Err(DriverError::InvalidConfig(format!(
-            "target `{}` uses a freestanding runtime and supports --emit obj, --emit asm, --emit llvm-ir, or target images",
+            "--emit jit runs the program in this process and cannot target `{}`",
             config.target.name()
         )));
     }
@@ -469,179 +468,118 @@ fn validate_tool_config(config: &CompilerConfig) -> Result<(), DriverError> {
     Ok(())
 }
 
-fn run_with_builtin_runner(config: &CompilerConfig) -> Result<(), DriverError> {
+fn parse_input(config: &CompilerConfig) -> Result<Vec<bf::Op>, DriverError> {
     let source = fs::read(&config.input).map_err(|source| DriverError::ReadSource {
         path: config.input.clone(),
         source,
     })?;
-    let ops = bf::parse(&source).map_err(DriverError::Syntax)?;
 
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let mut input = stdin.lock();
-    let mut output = stdout.lock();
-
-    runner::run_ops(&ops, config.tape_size, &mut input, &mut output)
-        .map_err(|error| DriverError::Runtime(error.to_string()))
+    bf::parse(&source).map_err(DriverError::Syntax)
 }
 
-fn write_llvm_ir(output: &Path, module: &str) -> Result<(), DriverError> {
-    if output == Path::new("-") {
-        print!("{module}");
-        return Ok(());
-    }
+fn run_in_process(config: &CompilerConfig) -> Result<(), DriverError> {
+    let ops = parse_input(config)?;
+    let options = CodegenOptions {
+        // The JIT's own I/O hooks move raw bytes, so there are no text-mode
+        // streams to correct.
+        binary_stdio: false,
+        ..config.codegen_options()
+    };
 
-    fs::write(output, module).map_err(|source| DriverError::WriteFile {
+    jit::run(&ops, &options, config.isa_options())
+        .map(|_status| ())
+        .map_err(DriverError::Runtime)
+}
+
+fn write_file(output: &Path, bytes: &[u8]) -> Result<(), DriverError> {
+    fs::write(output, bytes).map_err(|source| DriverError::WriteFile {
         path: output.to_path_buf(),
         source,
     })
 }
 
-fn compile_with_clang(
+fn link_executable(
     config: &CompilerConfig,
     output: &Path,
-    module: &str,
+    object: &[u8],
 ) -> Result<(), DriverError> {
-    let ll_path = if config.keep_ll {
-        output.with_extension("ll")
+    let linker = find_linker(config.linker.as_deref()).ok_or(DriverError::LinkerNotFound)?;
+
+    let object_path = if config.keep_object {
+        output.with_extension("o")
     } else {
-        temporary_llvm_path()
+        temporary_object_path()
     };
+    write_file(&object_path, object)?;
 
-    fs::write(&ll_path, module).map_err(|source| DriverError::WriteFile {
-        path: ll_path.clone(),
-        source,
-    })?;
-
-    let result = invoke_clang(config, output, &ll_path);
-
-    if !config.keep_ll {
-        let _ = fs::remove_file(&ll_path);
-    }
-
-    result
-}
-
-fn run_with_lli(config: &CompilerConfig, module: &str) -> Result<(), DriverError> {
-    let ll_path = if config.keep_ll {
-        default_output_path(&config.input, EmitKind::LlvmIr, &config.target)
-    } else {
-        temporary_llvm_path()
-    };
-
-    fs::write(&ll_path, module).map_err(|source| DriverError::WriteFile {
-        path: ll_path.clone(),
-        source,
-    })?;
-
-    let result = invoke_lli(config, &ll_path);
-
-    if !config.keep_ll {
-        let _ = fs::remove_file(&ll_path);
-    }
-
-    result
-}
-
-fn invoke_clang(config: &CompilerConfig, output: &Path, ll_path: &Path) -> Result<(), DriverError> {
-    let mut command = Command::new(&config.clang);
-    command.arg("-Wno-override-module");
-    command.arg(config.opt_level.clang_arg());
-
-    if config.target.is_freestanding() {
-        command.arg("-ffreestanding");
-        command.arg("-fno-builtin");
-    }
-
-    if let Some(target_triple) = config.target.llvm_triple() {
-        command.arg(format!("--target={target_triple}"));
-    }
-
-    command.args(config.target.clang_args());
-
-    match config.emit {
-        EmitKind::Executable => {}
-        EmitKind::Object => {
-            command.arg("-c");
-        }
-        EmitKind::Assembly => {
-            command.arg("-S");
-        }
-        EmitKind::Image => unreachable!("target image emission does not invoke generic clang"),
-        EmitKind::LlvmIr => unreachable!("LLVM IR emission does not invoke clang"),
-        EmitKind::Jit => unreachable!("built-in execution does not invoke clang"),
-        EmitKind::LlvmJit => unreachable!("LLVM JIT execution does not invoke clang"),
-    }
-
-    command.arg(ll_path);
+    let mut command = Command::new(&linker);
+    command.arg(&object_path);
     command.arg("-o");
     command.arg(output);
 
-    if let Some(failure) = tool::run_captured(command).map_err(|source| DriverError::RunTool {
-        tool: config.clang.clone(),
-        source,
-    })? {
-        return Err(DriverError::tool_failed(config.clang.clone(), failure));
-    }
-
-    Ok(())
-}
-
-fn invoke_lli(config: &CompilerConfig, ll_path: &Path) -> Result<(), DriverError> {
-    let status = Command::new(&config.lli)
-        .arg(ll_path)
-        .status()
-        .map_err(|source| DriverError::RunTool {
-            tool: config.lli.clone(),
+    let result = match tool::run_captured(command) {
+        Ok(None) => Ok(()),
+        Ok(Some(failure)) => Err(DriverError::tool_failed(
+            linker.display().to_string(),
+            failure,
+        )),
+        Err(source) => Err(DriverError::RunTool {
+            tool: linker.display().to_string(),
             source,
-        })?;
+        }),
+    };
 
-    if !status.success() {
-        return Err(DriverError::ToolFailed {
-            tool: config.lli.clone(),
-            status: status.to_string(),
-            stdout: String::new(),
-            stderr: String::new(),
-        });
+    if !config.keep_object {
+        let _ = fs::remove_file(&object_path);
     }
 
-    Ok(())
+    result
 }
 
-fn temporary_llvm_path() -> PathBuf {
+/// Find the linker to use, honouring an explicit command over discovery.
+pub fn find_linker(configured: Option<&str>) -> Option<PathBuf> {
+    match configured {
+        Some(command) => tool::resolve_command_path(command),
+        None => LINKER_CANDIDATES
+            .iter()
+            .find_map(|candidate| tool::find_on_path(candidate)),
+    }
+}
+
+fn temporary_object_path() -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    env::temp_dir().join(format!(
-        "hypothalamus-{}-{timestamp}.ll",
-        std::process::id()
-    ))
+    env::temp_dir().join(format!("hypothalamus-{}-{timestamp}.o", std::process::id()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codegen::FreestandingOptions;
+    use crate::target::{RuntimeAbi, TargetProfile};
 
     #[test]
     fn parses_emit_kinds() {
         assert_eq!(EmitKind::parse("jit"), Some(EmitKind::Jit));
         assert_eq!(EmitKind::parse("run"), Some(EmitKind::Jit));
-        assert_eq!(EmitKind::parse("llvm-jit"), Some(EmitKind::LlvmJit));
-        assert_eq!(EmitKind::parse("lli"), Some(EmitKind::LlvmJit));
-        assert_eq!(EmitKind::parse("ll"), Some(EmitKind::LlvmIr));
-        assert_eq!(EmitKind::parse("rom"), Some(EmitKind::Image));
-        assert_eq!(EmitKind::parse("image"), Some(EmitKind::Image));
+        assert_eq!(EmitKind::parse("exe"), Some(EmitKind::Executable));
+        assert_eq!(EmitKind::parse("obj"), Some(EmitKind::Object));
+        assert_eq!(EmitKind::parse("llvm-ir"), None);
         assert_eq!(EmitKind::parse("bad"), None);
     }
 
     #[test]
-    fn parses_optimization_levels() {
-        assert_eq!(OptLevel::parse("0"), Some(OptLevel::Zero));
-        assert_eq!(OptLevel::parse("3"), Some(OptLevel::Three));
-        assert_eq!(OptLevel::parse("s"), Some(OptLevel::Size));
-        assert_eq!(OptLevel::parse("z"), Some(OptLevel::SizeMin));
+    fn folds_familiar_optimization_levels_onto_cranelift_levels() {
+        assert_eq!(OptLevel::parse("0"), Some(OptLevel::None));
+        assert_eq!(OptLevel::parse("2"), Some(OptLevel::Speed));
+        assert_eq!(OptLevel::parse("3"), Some(OptLevel::Speed));
+        assert_eq!(OptLevel::parse("z"), Some(OptLevel::SpeedAndSize));
         assert_eq!(OptLevel::parse("fast"), None);
+
+        assert_eq!(OptLevel::None.cranelift_setting(), "none");
+        assert_eq!(OptLevel::SpeedAndSize.cranelift_setting(), "speed_and_size");
     }
 
     #[test]
@@ -651,64 +589,86 @@ mod tests {
         config.output = Some(PathBuf::from("hello"));
 
         assert!(matches!(
-            compile_with_tools(&config),
+            compile(&config),
             Err(DriverError::InvalidConfig(message)) if message.contains("--emit jit")
         ));
     }
 
     #[test]
-    fn rejects_image_for_targets_without_image_builders() {
-        let mut config = CompilerConfig::new("examples/hello.bf");
-        config.emit = EmitKind::Image;
+    fn rejects_cross_target_jit() {
+        let mut config = CompilerConfig::for_target(
+            "examples/hello.bf",
+            TargetProfile::resolve("aarch64-apple-darwin"),
+        );
+        config.emit = EmitKind::Jit;
 
         assert!(matches!(
-            compile_with_tools(&config),
-            Err(DriverError::InvalidConfig(message)) if message.contains("complete-image builder")
+            compile(&config),
+            Err(DriverError::InvalidConfig(message)) if message.contains("in this process")
         ));
     }
 
     #[test]
-    fn rejects_image_output_to_stdout() {
-        let mut config =
-            CompilerConfig::for_target("examples/hello.bf", TargetProfile::resolve("gba"));
-        config.output = Some(PathBuf::from("-"));
-
-        assert!(matches!(
-            compile_with_tools(&config),
-            Err(DriverError::InvalidConfig(message)) if message.contains("--emit llvm-ir")
-        ));
-    }
-
-    #[test]
-    fn rejects_stdout_output_for_non_llvm_ir_modes() {
-        for emit in [
-            EmitKind::Executable,
-            EmitKind::Object,
-            EmitKind::Assembly,
-            EmitKind::Image,
-        ] {
-            let target = if emit == EmitKind::Image {
-                TargetProfile::resolve("gba")
-            } else {
-                TargetProfile::native()
-            };
-            let mut config = CompilerConfig::for_target("examples/hello.bf", target);
+    fn rejects_hosted_output_for_freestanding_targets() {
+        for emit in [EmitKind::Executable, EmitKind::Jit] {
+            let mut config = CompilerConfig::for_target(
+                "examples/hello.bf",
+                TargetProfile::resolve("x86_64-none"),
+            );
             config.emit = emit;
-            config.output = Some(PathBuf::from("-"));
 
             assert!(matches!(
-                validate_tool_config(&config),
-                Err(DriverError::InvalidConfig(message)) if message.contains("--emit llvm-ir")
+                validate_config(&config),
+                Err(DriverError::InvalidConfig(message)) if message.contains("freestanding runtime")
             ));
         }
     }
 
     #[test]
-    fn gba_images_default_to_gba_extension() {
-        let target = TargetProfile::resolve("gba");
-        let output = default_output_path(Path::new("hello.bf"), EmitKind::Image, &target);
+    fn rejects_stdout_output() {
+        let mut config = CompilerConfig::new("examples/hello.bf");
+        config.emit = EmitKind::Object;
+        config.output = Some(PathBuf::from("-"));
 
-        assert_eq!(output, PathBuf::from("hello.gba"));
+        assert!(matches!(
+            validate_config(&config),
+            Err(DriverError::InvalidConfig(message)) if message.contains("--output -")
+        ));
+    }
+
+    #[test]
+    fn compiles_a_freestanding_object_without_any_tool() {
+        let target = TargetProfile::resolve("x86_64-none");
+        let mut config = CompilerConfig::for_target("examples/hello.bf", target);
+        config.emit = EmitKind::Object;
+
+        let object = compile_to_object(&config).expect("freestanding object should compile");
+
+        assert!(!object.is_empty());
+    }
+
+    #[test]
+    fn honours_custom_freestanding_symbols() {
+        let target = TargetProfile::resolve("x86_64-none").with_runtime_abi(
+            RuntimeAbi::Freestanding(FreestandingOptions {
+                entry_symbol: "kernel bf".to_string(),
+                ..FreestandingOptions::default()
+            }),
+        );
+        let config = CompilerConfig::for_target("examples/hello.bf", target);
+
+        assert!(matches!(
+            compile_to_object(&config),
+            Err(DriverError::Codegen(CodegenError::InvalidSymbolName { .. }))
+        ));
+    }
+
+    #[test]
+    fn object_output_defaults_to_a_dot_o_path() {
+        let target = TargetProfile::resolve("x86_64-none");
+        let output = default_output_path(Path::new("hello.bf"), EmitKind::Object, &target);
+
+        assert_eq!(output, PathBuf::from("hello.o"));
     }
 
     #[test]
@@ -721,8 +681,8 @@ mod tests {
 
     #[test]
     fn native_executables_follow_the_host() {
-        // The native target has no triple of its own, so clang builds for the
-        // host and the host decides whether `.exe` is needed.
+        // The native target has no triple of its own, so the host decides
+        // whether `.exe` is needed.
         let target = TargetProfile::native();
         let output = default_output_path(Path::new("hello.bf"), EmitKind::Executable, &target);
 
@@ -760,5 +720,10 @@ mod tests {
             with_executable_extension(PathBuf::from("hello"), EmitKind::Object, &target),
             PathBuf::from("hello")
         );
+    }
+
+    #[test]
+    fn an_explicit_linker_is_used_verbatim_when_it_exists() {
+        assert_eq!(find_linker(Some("hypothalamus-absent-linker")), None);
     }
 }

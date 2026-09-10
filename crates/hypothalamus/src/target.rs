@@ -1,12 +1,15 @@
 //! Target profiles for hosted and freestanding Brainfuck output.
 //!
-//! A target profile is deliberately small: it names an LLVM target triple,
-//! runtime ABI, default output kind, optional target image format, and extra
-//! LLVM-driver flags. Complete image construction stays in target-specific
-//! builder modules.
+//! A target profile is deliberately small: it names a target triple, a runtime
+//! ABI, and a default output kind. Cranelift decides everything else from the
+//! triple, so there are no per-target toolchain flags to carry around.
+//!
+//! Cranelift's backends cover x86-64, aarch64, riscv64, and s390x. There is no
+//! 32-bit x86 or ARM backend, so 32-bit presets are not offered; a raw triple
+//! naming one is rejected when the target is resolved to an ISA.
 
+use crate::codegen::{FreestandingOptions, Runtime};
 use crate::driver::EmitKind;
-use crate::llvm::{FreestandingOptions, Runtime};
 
 /// Runtime ABI used by a target profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,8 +27,8 @@ impl RuntimeAbi {
         matches!(self, Self::Freestanding(_))
     }
 
-    /// Convert this target ABI into LLVM backend runtime options.
-    pub fn to_llvm_runtime(&self) -> Runtime {
+    /// Convert this target ABI into backend runtime options.
+    pub fn to_codegen_runtime(&self) -> Runtime {
         match self {
             Self::Hosted => Runtime::Hosted,
             Self::Freestanding(options) => Runtime::Freestanding(options.clone()),
@@ -52,13 +55,6 @@ impl RuntimeAbiKind {
     }
 }
 
-/// Complete-image format produced by a target-specific builder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetImageFormat {
-    /// Game Boy Advance `.gba` ROM image.
-    Gba,
-}
-
 /// A built-in target preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetPreset {
@@ -68,20 +64,14 @@ pub struct TargetPreset {
     /// Short human-readable description.
     pub description: &'static str,
 
-    /// LLVM target triple embedded in IR and passed to `clang`.
-    pub llvm_triple: Option<&'static str>,
+    /// Target triple Cranelift compiles for, or `None` for the host.
+    pub triple: Option<&'static str>,
 
     /// Runtime ABI used by this preset.
     pub runtime_abi: RuntimeAbiKind,
 
-    /// Additional arguments passed to `clang`.
-    pub clang_args: &'static [&'static str],
-
     /// Default output kind for this target.
     pub default_emit: EmitKind,
-
-    /// Optional complete-image format for this target.
-    pub image_format: Option<TargetImageFormat>,
 }
 
 impl TargetPreset {
@@ -90,11 +80,9 @@ impl TargetPreset {
         TargetProfile {
             name: self.name.to_string(),
             description: self.description.to_string(),
-            llvm_triple: self.llvm_triple.map(ToString::to_string),
+            triple: self.triple.map(ToString::to_string),
             runtime_abi: self.runtime_abi.into_abi(),
-            clang_args: self.clang_args.iter().map(ToString::to_string).collect(),
             default_emit: self.default_emit,
-            image_format: self.image_format,
         }
     }
 }
@@ -104,11 +92,9 @@ impl TargetPreset {
 pub struct TargetProfile {
     name: String,
     description: String,
-    llvm_triple: Option<String>,
+    triple: Option<String>,
     runtime_abi: RuntimeAbi,
-    clang_args: Vec<String>,
     default_emit: EmitKind,
-    image_format: Option<TargetImageFormat>,
 }
 
 impl TargetProfile {
@@ -117,23 +103,21 @@ impl TargetProfile {
         known_targets()[0].profile()
     }
 
-    /// Resolve a known target name or treat `value` as a raw LLVM triple.
+    /// Resolve a known target name or treat `value` as a raw target triple.
     pub fn resolve(value: &str) -> Self {
         find_target(value)
             .map(TargetPreset::profile)
-            .unwrap_or_else(|| Self::raw_llvm_triple(value))
+            .unwrap_or_else(|| Self::raw_triple(value))
     }
 
-    /// Create a hosted profile for an arbitrary LLVM triple.
-    pub fn raw_llvm_triple(triple: &str) -> Self {
+    /// Create a hosted profile for an arbitrary target triple.
+    pub fn raw_triple(triple: &str) -> Self {
         Self {
             name: triple.to_string(),
-            description: "raw LLVM target triple".to_string(),
-            llvm_triple: Some(triple.to_string()),
+            description: "raw target triple".to_string(),
+            triple: Some(triple.to_string()),
             runtime_abi: RuntimeAbi::Hosted,
-            clang_args: Vec::new(),
             default_emit: EmitKind::Executable,
-            image_format: None,
         }
     }
 
@@ -141,19 +125,16 @@ impl TargetProfile {
     pub fn custom(
         name: impl Into<String>,
         description: impl Into<String>,
-        llvm_triple: Option<String>,
+        triple: Option<String>,
         runtime_abi: RuntimeAbi,
-        clang_args: Vec<String>,
         default_emit: EmitKind,
     ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
-            llvm_triple,
+            triple,
             runtime_abi,
-            clang_args,
             default_emit,
-            image_format: None,
         }
     }
 
@@ -167,9 +148,9 @@ impl TargetProfile {
         &self.description
     }
 
-    /// Return the LLVM target triple, if this profile forces one.
-    pub fn llvm_triple(&self) -> Option<&str> {
-        self.llvm_triple.as_deref()
+    /// Return the target triple, if this profile forces one.
+    pub fn triple(&self) -> Option<&str> {
+        self.triple.as_deref()
     }
 
     /// Return the target runtime ABI.
@@ -182,19 +163,9 @@ impl TargetProfile {
         self.runtime_abi.is_freestanding()
     }
 
-    /// Return additional arguments passed to `clang` for this target.
-    pub fn clang_args(&self) -> &[String] {
-        &self.clang_args
-    }
-
     /// Return the default output kind for this target.
     pub fn default_emit(&self) -> EmitKind {
         self.default_emit
-    }
-
-    /// Return the complete-image format supported by this profile, if any.
-    pub fn image_format(&self) -> Option<TargetImageFormat> {
-        self.image_format
     }
 
     /// Replace the runtime ABI for this profile.
@@ -208,12 +179,6 @@ impl TargetProfile {
     /// Return a copy of this profile with a different runtime ABI.
     pub fn with_runtime_abi(mut self, runtime_abi: RuntimeAbi) -> Self {
         self.set_runtime_abi(runtime_abi);
-        self
-    }
-
-    /// Return a copy of this profile with a complete-image format.
-    pub fn with_image_format(mut self, image_format: Option<TargetImageFormat>) -> Self {
-        self.image_format = image_format;
         self
     }
 }
@@ -231,51 +196,20 @@ pub fn find_target(name: &str) -> Option<TargetPreset> {
         .find(|target| target.name == name)
 }
 
-const TARGETS: [TargetPreset; 5] = [
+const TARGETS: [TargetPreset; 2] = [
     TargetPreset {
         name: "native",
-        description: "hosted executable/JIT on the host LLVM default target",
-        llvm_triple: None,
+        description: "hosted executable or JIT on the host architecture",
+        triple: None,
         runtime_abi: RuntimeAbiKind::Hosted,
-        clang_args: &[],
         default_emit: EmitKind::Executable,
-        image_format: None,
     },
     TargetPreset {
         name: "x86_64-none",
         description: "x86_64 freestanding object for a caller-provided runtime",
-        llvm_triple: Some("x86_64-unknown-none"),
+        triple: Some("x86_64-unknown-none-elf"),
         runtime_abi: RuntimeAbiKind::Freestanding,
-        clang_args: &[],
         default_emit: EmitKind::Object,
-        image_format: None,
-    },
-    TargetPreset {
-        name: "i386-none",
-        description: "32-bit x86 freestanding object for tiny boot/runtime layers",
-        llvm_triple: Some("i386-unknown-none"),
-        runtime_abi: RuntimeAbiKind::Freestanding,
-        clang_args: &[],
-        default_emit: EmitKind::Object,
-        image_format: None,
-    },
-    TargetPreset {
-        name: "nds-arm9",
-        description: "Nintendo DS ARM9 freestanding payload object",
-        llvm_triple: Some("armv5te-none-eabi"),
-        runtime_abi: RuntimeAbiKind::Freestanding,
-        clang_args: &["-mcpu=arm946e-s"],
-        default_emit: EmitKind::Object,
-        image_format: None,
-    },
-    TargetPreset {
-        name: "gba",
-        description: "Game Boy Advance ARM7TDMI/Thumb ROM image",
-        llvm_triple: Some("thumbv4t-none-eabi"),
-        runtime_abi: RuntimeAbiKind::Freestanding,
-        clang_args: &["-mcpu=arm7tdmi", "-mthumb"],
-        default_emit: EmitKind::Image,
-        image_format: Some(TargetImageFormat::Gba),
     },
 ];
 
@@ -288,7 +222,7 @@ mod tests {
         let target = TargetProfile::resolve("native");
 
         assert_eq!(target.name(), "native");
-        assert_eq!(target.llvm_triple(), None);
+        assert_eq!(target.triple(), None);
         assert!(!target.is_freestanding());
         assert_eq!(target.default_emit(), EmitKind::Executable);
     }
@@ -298,52 +232,40 @@ mod tests {
         let target = TargetProfile::resolve("x86_64-unknown-linux-gnu");
 
         assert_eq!(target.name(), "x86_64-unknown-linux-gnu");
-        assert_eq!(target.llvm_triple(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(target.triple(), Some("x86_64-unknown-linux-gnu"));
         assert!(!target.is_freestanding());
         assert_eq!(target.default_emit(), EmitKind::Executable);
     }
 
     #[test]
-    fn gba_is_freestanding_thumb_target() {
-        let target = TargetProfile::resolve("gba");
+    fn x86_64_none_is_a_freestanding_object_target() {
+        let target = TargetProfile::resolve("x86_64-none");
 
-        assert_eq!(target.llvm_triple(), Some("thumbv4t-none-eabi"));
-        assert!(target.is_freestanding());
-        assert_eq!(target.default_emit(), EmitKind::Image);
-        assert_eq!(target.image_format(), Some(TargetImageFormat::Gba));
-        assert!(target.clang_args().iter().any(|arg| arg == "-mthumb"));
-    }
-
-    #[test]
-    fn nds_arm9_is_freestanding_object_target() {
-        let target = TargetProfile::resolve("nds-arm9");
-
-        assert_eq!(target.llvm_triple(), Some("armv5te-none-eabi"));
+        assert_eq!(target.triple(), Some("x86_64-unknown-none-elf"));
         assert!(target.is_freestanding());
         assert_eq!(target.default_emit(), EmitKind::Object);
-        assert_eq!(target.image_format(), None);
-        assert!(
-            target
-                .clang_args()
-                .iter()
-                .any(|arg| arg == "-mcpu=arm946e-s")
-        );
     }
 
     #[test]
-    fn builds_custom_freestanding_target() {
+    fn builds_custom_freestanding_targets() {
         let target = TargetProfile::custom(
             "weird-board",
             "custom board",
-            Some("thumbv7em-none-eabi".to_string()),
+            Some("aarch64-unknown-none-elf".to_string()),
             RuntimeAbi::Freestanding(FreestandingOptions::default()),
-            vec!["-mcpu=cortex-m4".to_string()],
             EmitKind::Object,
         );
 
         assert_eq!(target.name(), "weird-board");
-        assert_eq!(target.llvm_triple(), Some("thumbv7em-none-eabi"));
+        assert_eq!(target.triple(), Some("aarch64-unknown-none-elf"));
         assert!(target.is_freestanding());
-        assert_eq!(target.clang_args(), ["-mcpu=cortex-m4"]);
+    }
+
+    #[test]
+    fn adopting_a_freestanding_abi_switches_the_default_output() {
+        let target = TargetProfile::native()
+            .with_runtime_abi(RuntimeAbi::Freestanding(FreestandingOptions::default()));
+
+        assert_eq!(target.default_emit(), EmitKind::Object);
     }
 }
