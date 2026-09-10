@@ -147,9 +147,6 @@ stty -icanon -echo min 0 time 0     # unbuffered, and reads return immediately
 `getc` allocates a fresh cell before reading and Brainfuck leaves that cell
 alone at end of input, so "no key" arrives as `0` and a program can poll.
 
-For a real framebuffer and a keyboard that needs no `stty`, there is
-[`occipital`](../occipital) — but that is a runtime, and this is not.
-
 ## The language
 
 ### Types

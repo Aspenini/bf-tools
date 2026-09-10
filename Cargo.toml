@@ -19,6 +19,5 @@ rust-version = "1.85"
 # what pulls in an argument parser, and only lobe's own binary needs it.
 lobe = { path = "crates/lobe", default-features = false }
 cranium-lang = { path = "crates/cranium" }
-# trepan reuses hypothalamus's Brainfuck parser and optimized IR; occipital
-# reuses its JIT.
+# trepan reuses hypothalamus's Brainfuck parser and optimized IR.
 hypothalamus = { path = "crates/hypothalamus" }

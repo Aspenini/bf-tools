@@ -7,7 +7,6 @@ Brainfuck tooling monorepo: write real programs, then compile or interpret them.
 | [`cranium-lang`](crates/cranium) | A structured language that compiles **to** Brainfuck |
 | [`hypothalamus`](crates/hypothalamus) | AOT compiler and JIT (Cranelift) |
 | [`lobe`](crates/lobe) | Interpreter |
-| [`occipital`](crates/occipital) | Runs a program in a window, with graphics and a keyboard |
 | [`wernicke`](crates/wernicke) | Language server for Cranium |
 | [`trepan`](crates/trepan) | Lifts Brainfuck back into Cranium |
 
@@ -15,7 +14,7 @@ Editor support: a [Zed extension](editors/zed) and the
 [tree-sitter grammar](editors/tree-sitter-cranium) behind it.
 
 ```bash
-cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe occipital wernicke trepan
+cargo install --git https://github.com/Aspenini/bf-tools cranium-lang hypothalamus lobe wernicke trepan
 ```
 
 The three fit together end to end:
@@ -24,15 +23,6 @@ The three fit together end to end:
 cranium life.cra -o life.bf     # Cranium  -> Brainfuck
 hypothalamus life.bf -o life    # Brainfuck -> native binary
 lobe life.bf                    # or just interpret it
-```
-
-`occipital` gives a program a window instead of a terminal — a 256x192
-framebuffer and an unbuffered keyboard, both reached through the one byte in
-and one byte out that Brainfuck already has:
-
-```bash
-occipital crates/occipital/examples/bounce.cra   # arrows steer, q quits
-occipital crates/cranium/examples/fizzbuzz.cra   # text programs work unchanged
 ```
 
 `trepan` goes the other way, turning Brainfuck back into Cranium for programs
