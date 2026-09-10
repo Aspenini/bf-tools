@@ -43,6 +43,42 @@ pub struct Output {
     pub cells_used: usize,
     /// Global arrays, in the order they were laid out.
     pub arrays: Vec<ArrayPlacement>,
+    /// What each function cost, largest first.
+    pub costs: Vec<FunctionCost>,
+}
+
+/// What one function, or one builtin, cost the finished program.
+///
+/// Cranium inlines every call, so a function called from ten places emits its
+/// body ten times. That is usually the difference between a program that is
+/// large and one that is not, and it is invisible in the source, so the
+/// compiler counts it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionCost {
+    /// Function or builtin name.
+    pub name: String,
+
+    /// How many times it was inlined.
+    pub calls: usize,
+
+    /// Brainfuck commands emitted for it, including everything it called.
+    pub total: usize,
+
+    /// Commands emitted for its own body, with the calls it made subtracted.
+    ///
+    /// This is the number that says whether a function is worth calling from
+    /// fewer places: it is what all its call sites added between them.
+    pub own: usize,
+
+    /// The smallest single call site's own cost.
+    pub smallest: usize,
+
+    /// The largest single call site's own cost.
+    ///
+    /// Call sites are not alike - `print` of a string costs almost nothing and
+    /// `print` of a number emits a decimal conversion - so an average across
+    /// them would suggest a uniformity that is not there.
+    pub largest: usize,
 }
 
 /// A lowering failure.
@@ -133,6 +169,11 @@ struct Compiler<'a> {
     loop_depth: usize,
     control: Addr,
     arrays: Vec<ArrayPlacement>,
+    /// Name to (calls, total, own, smallest, largest), built as lowering runs.
+    costs: HashMap<String, (usize, usize, usize, usize, usize)>,
+    /// The calls currently being lowered: name, output length on entry, and
+    /// how much of that has since been charged to calls made inside it.
+    cost_stack: Vec<(String, usize, usize)>,
 }
 
 /// Lower a parsed program to Brainfuck.
@@ -153,10 +194,29 @@ pub fn compile(program: &Program) -> CResult<Output> {
     compiler.run(program)?;
     let cells_used = compiler.bf.cells_used();
     let arrays = std::mem::take(&mut compiler.arrays);
+    let mut costs = std::mem::take(&mut compiler.costs)
+        .into_iter()
+        .map(
+            |(name, (calls, total, own, smallest, largest))| FunctionCost {
+                name,
+                calls,
+                total,
+                own,
+                smallest: smallest.min(largest),
+                largest,
+            },
+        )
+        .collect::<Vec<_>>();
+    // By `own` rather than `total`, because that is the one that partitions
+    // the program: totals count nested calls twice and sum past 100%. Ties
+    // break on name, so the report does not shuffle between runs.
+    costs.sort_by(|a, b| b.own.cmp(&a.own).then_with(|| a.name.cmp(&b.name)));
+
     Ok(Output {
         code: compiler.bf.finish(),
         cells_used,
         arrays,
+        costs,
     })
 }
 
@@ -172,6 +232,8 @@ impl<'a> Compiler<'a> {
             loop_depth: 0,
             control: 0,
             arrays: Vec::new(),
+            costs: HashMap::new(),
+            cost_stack: Vec::new(),
         }
     }
 
@@ -1466,20 +1528,50 @@ impl<'a> Compiler<'a> {
     // ---- calls ------------------------------------------------------------
 
     fn call(&mut self, name: &str, args: &'a [Expr], span: Span) -> CResult<Value> {
-        match name {
-            "print" => return self.builtin_print(args, false),
-            "println" => return self.builtin_print(args, true),
-            "putc" => return self.builtin_putc(args, span),
-            "getc" => return self.builtin_getc(args, span),
-            "puts" => return self.builtin_puts(args, span),
-            "len" => return self.builtin_len(args, span),
-            _ => {}
+        if BUILTINS.contains(&name) {
+            self.enter_cost(name);
+            let result = match name {
+                "print" => self.builtin_print(args, false),
+                "println" => self.builtin_print(args, true),
+                "putc" => self.builtin_putc(args, span),
+                "getc" => self.builtin_getc(args, span),
+                "puts" => self.builtin_puts(args, span),
+                _ => self.builtin_len(args, span),
+            };
+            self.leave_cost();
+            return result;
         }
 
         let Some(function) = self.functions.get(name).copied() else {
             return error(span, format!("`{name}` is not defined"));
         };
         self.inline_call(function, args, span)
+    }
+
+    /// Start charging emitted commands to `name`.
+    fn enter_cost(&mut self, name: &str) {
+        self.cost_stack.push((name.to_string(), self.bf.len(), 0));
+    }
+
+    /// Stop charging to the innermost call, and bill its total to its caller
+    /// so that the caller's own cost excludes it.
+    fn leave_cost(&mut self) {
+        let Some((name, start, inner)) = self.cost_stack.pop() else {
+            return;
+        };
+        let total = self.bf.len().saturating_sub(start);
+
+        let own = total.saturating_sub(inner);
+        let entry = self.costs.entry(name).or_insert((0, 0, 0, usize::MAX, 0));
+        entry.0 += 1;
+        entry.1 += total;
+        entry.2 += own;
+        entry.3 = entry.3.min(own);
+        entry.4 = entry.4.max(own);
+
+        if let Some(parent) = self.cost_stack.last_mut() {
+            parent.2 += total;
+        }
     }
 
     fn inline_call(
@@ -1509,6 +1601,8 @@ impl<'a> Compiler<'a> {
             );
         }
 
+        self.enter_cost(&function.name);
+
         let return_slot = self.bf.alloc_zeroed(function.ret.width());
         let mark = self.bf.watermark();
 
@@ -1536,6 +1630,7 @@ impl<'a> Compiler<'a> {
 
         self.clear_control(CONTROL_RETURN);
         self.bf.release_to(mark);
+        self.leave_cost();
 
         Ok(Value {
             addr: return_slot,

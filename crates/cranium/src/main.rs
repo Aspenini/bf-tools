@@ -150,9 +150,10 @@ fn compile(options: &Options) -> Result<(), String> {
                 array.base, array.name, array.cells
             );
         }
+        print_costs(&compiled);
         if compiled.cells_used > 30_000 {
             eprintln!(
-                "cranium: warning: this needs more than the usual 30,000-cell tape;                  run it with `hypothalamus --tape-size {}` or `lobe --tape-size {}`",
+                "cranium: warning: this needs more than the usual 30,000-cell tape; \n                 run it with `hypothalamus --tape-size {}` or `lobe --tape-size {}`",
                 compiled.cells_used, compiled.cells_used
             );
         }
@@ -190,6 +191,71 @@ fn default_output(input: &Path) -> PathBuf {
     input.with_extension("bf")
 }
 
+/// Report where the program's Brainfuck commands went.
+///
+/// Every call is inlined, so the cost of a function is its body times the
+/// number of places it is called from. That is the main thing to watch in a
+/// large program and it cannot be seen in the source, so `--stats` says it.
+///
+/// `total` includes everything a function called; `own` has those calls
+/// subtracted, and is therefore what one more call site would add.
+fn print_costs(compiled: &cranium::Output) {
+    const SHOWN: usize = 8;
+
+    // `main` is the whole program, so listing it says nothing.
+    let interesting: Vec<&cranium::codegen::FunctionCost> = compiled
+        .costs
+        .iter()
+        .filter(|cost| cost.name != "main")
+        .take(SHOWN)
+        .collect();
+
+    if interesting.is_empty() {
+        return;
+    }
+
+    eprintln!("cranium: where the commands went:");
+    for cost in &interesting {
+        // `own` rather than `total`: it excludes the calls this one made, so
+        // the column adds up instead of counting nested calls twice.
+        let share = cost.own * 100 / compiled.code.len().max(1);
+        let sites = match cost.calls {
+            1 => "1 call".to_string(),
+            // Call sites are not always alike - `print` of a string costs
+            // almost nothing next to `print` of a number - so say so rather
+            // than averaging over them.
+            _ if cost.largest > cost.smallest * 2 => {
+                format!("{} calls, {}-{}", cost.calls, cost.smallest, cost.largest)
+            }
+            calls => format!("{calls} calls x {}", cost.own / calls),
+        };
+        eprintln!(
+            "cranium:   {:>7} ({share:>2}%)  {:<16} {sites}",
+            cost.own, cost.name,
+        );
+    }
+
+    // The restructuring the README recommends, pointed at whichever function
+    // it would help most. Merging call sites still leaves one of them, and the
+    // largest is the honest guess at which.
+    if let Some(worst) = interesting
+        .iter()
+        .filter(|cost| cost.calls > 1)
+        .max_by_key(|cost| cost.own.saturating_sub(cost.largest))
+        && worst.own.saturating_sub(worst.largest) > compiled.code.len() / 10
+    {
+        eprintln!(
+            "cranium: note: `{}` is inlined {} times; calling it from one place would save",
+            worst.name, worst.calls,
+        );
+        eprintln!(
+            "cranium:       roughly {} commands, about {}% of the program",
+            worst.own - worst.largest,
+            (worst.own - worst.largest) * 100 / compiled.code.len().max(1),
+        );
+    }
+}
+
 fn run_program(code: &str, cells_used: usize) -> Result<(), String> {
     let tape_size = cells_used.max(30_000);
     let mut runtime = lobe::create_runtime_with_tape(code, lobe::CellSize::Bits8, tape_size)
@@ -214,7 +280,7 @@ OPTIONS:
     -o, --output <PATH>   Where to write the Brainfuck (default: input with a .bf extension)
         --emit <KIND>     bf (default), tokens, or ast (whole program, imports included)
     -r, --run             Run the program instead of writing it out
-        --stats           Report program size and tape usage
+        --stats           Report program size, tape usage, and where the commands went
     -h, --help            Show this message
         --version         Show the version
 

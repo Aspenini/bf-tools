@@ -420,10 +420,15 @@ fn main() {
 
         let command = read_command();
 
-        if command == 'w' || command == 'W' {
-            try_move(true);
-        } else if command == 's' || command == 'S' {
-            try_move(false);
+        // Both movement commands go through one call rather than one each.
+        // `try_move` is the largest function here, and every call site emits
+        // another copy of it: `cranium --stats` put the second one at 14% of
+        // the whole program.
+        let forward = command == 'w' || command == 'W';
+        let backward = command == 's' || command == 'S';
+
+        if forward || backward {
+            try_move(forward);
         } else if command == 'a' || command == 'A' {
             turn_left();
         } else if command == 'd' || command == 'D' {

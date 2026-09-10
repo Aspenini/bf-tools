@@ -375,3 +375,41 @@ fn survives_nonsense_without_falling_over() {
     let junk = json::parse(r#"{"jsonrpc":"2.0"}"#).expect("valid json");
     assert!(server.handle(&junk).is_empty());
 }
+
+#[test]
+fn the_bundled_library_resolves_without_a_file_on_disk() {
+    // `import "std/gfx.cra"` is answered from inside the compiler, so an
+    // editor has to see it too - otherwise every program using the library
+    // would be underlined in red.
+    let mut server = Server::new();
+    let path = scratch("uses-std.cra");
+
+    let replies = server.handle(&did_open(
+        &path,
+        "import \"std/gfx.cra\";\n\nfn shade(x: byte, y: byte) {\n    set_rgb(x, y, 0);\n}\n\nfn main() {\n    present();\n}\n",
+    ));
+
+    let reported = diagnostics(&replies);
+    assert_eq!(reported.len(), 1, "{reported:?}");
+    assert!(
+        reported[0].1.is_empty(),
+        "the bundled library did not resolve: {reported:?}"
+    );
+}
+
+#[test]
+fn the_bundled_library_offers_its_own_completions() {
+    let mut server = Server::new();
+    let path = scratch("std-completions.cra");
+    server.handle(&did_open(
+        &path,
+        "import \"std/gfx.cra\";\n\nfn shade(x: byte, y: byte) {\n    set_rgb(x, y, 0);\n}\n\nfn main() {\n    \n}\n",
+    ));
+
+    let replies = server.handle(&request(9, "textDocument/completion", at(&path, 6, 4)));
+    let text = format!("{:?}", replies);
+
+    for expected in ["present", "set_rgb", "home", "clear"] {
+        assert!(text.contains(expected), "no completion for `{expected}`");
+    }
+}

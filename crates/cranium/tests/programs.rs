@@ -1197,3 +1197,117 @@ fn raycaster_example_compiles() {
         compiled.cells_used
     );
 }
+
+// ---- where the commands went ---------------------------------------------
+//
+// Every call is inlined, so a function called from ten places emits its body
+// ten times. `--stats` counts that, because it is the main thing that decides
+// how large a program gets and it cannot be seen in the source.
+
+/// Find one function's entry in the cost table.
+fn cost_of<'a>(compiled: &'a cranium::Output, name: &str) -> &'a cranium::codegen::FunctionCost {
+    compiled
+        .costs
+        .iter()
+        .find(|cost| cost.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "no cost for `{name}`; have {:?}",
+                compiled.costs.iter().map(|c| &c.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+#[test]
+fn a_function_called_twice_costs_twice() {
+    let once = compile_str(
+        "fn helper(a: byte) -> byte { return a * 3 + 1; }\n\
+         fn main() { let x = helper(2); }\n",
+    )
+    .expect("compiles");
+    let twice = compile_str(
+        "fn helper(a: byte) -> byte { return a * 3 + 1; }\n\
+         fn main() { let x = helper(2); let y = helper(5); }\n",
+    )
+    .expect("compiles");
+
+    assert_eq!(cost_of(&once, "helper").calls, 1);
+    assert_eq!(cost_of(&twice, "helper").calls, 2);
+
+    // Not exactly double - the arguments differ - but close, and the program
+    // grows by about what the second copy costs.
+    let one = cost_of(&once, "helper").own;
+    let two = cost_of(&twice, "helper").own;
+    assert!(two > one * 3 / 2, "{one} then {two}");
+    assert!(two < one * 5 / 2, "{one} then {two}");
+}
+
+#[test]
+fn printing_a_number_costs_far_more_than_printing_a_string() {
+    // The README says so; this is the number behind it.
+    let compiled =
+        compile_str("fn main() {\n    print(\"hello\");\n    let n: byte = 7;\n    print(n);\n}\n")
+            .expect("compiles");
+
+    let print = cost_of(&compiled, "print");
+    assert_eq!(print.calls, 2);
+    assert!(
+        print.largest > print.smallest * 50,
+        "a decimal conversion should dwarf a string: {} vs {}",
+        print.smallest,
+        print.largest
+    );
+}
+
+#[test]
+fn own_cost_excludes_the_calls_a_function_makes() {
+    let compiled = compile_str(
+        "fn inner(a: byte) -> byte { return a * 7 + 3; }\n\
+         fn outer(a: byte) -> byte { return inner(a) + inner(a); }\n\
+         fn main() { let x = outer(2); }\n",
+    )
+    .expect("compiles");
+
+    let outer = cost_of(&compiled, "outer");
+    let inner = cost_of(&compiled, "inner");
+
+    assert_eq!(inner.calls, 2, "inner is called twice from outer");
+    // `total` counts what it called; `own` does not, which is what makes the
+    // column add up rather than counting nested calls twice.
+    assert!(outer.total > outer.own, "{outer:?}");
+    assert!(
+        outer.total >= inner.own,
+        "outer's total should contain inner: {outer:?} {inner:?}"
+    );
+}
+
+#[test]
+fn the_costs_partition_the_program_rather_than_exceeding_it() {
+    let compiled = compile_str(include_str!("../examples/calc.cra")).expect("compiles");
+
+    let own: usize = compiled
+        .costs
+        .iter()
+        .filter(|cost| cost.name != "main")
+        .map(|cost| cost.own)
+        .sum();
+
+    assert!(
+        own <= compiled.code.len(),
+        "own costs {own} exceed the program's {} commands",
+        compiled.code.len()
+    );
+    // Ordered biggest first, so the report needs no sorting of its own.
+    let owns: Vec<usize> = compiled.costs.iter().map(|cost| cost.own).collect();
+    let mut sorted = owns.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(owns, sorted, "costs are not ordered by own cost");
+}
+
+#[test]
+fn builtins_are_counted_alongside_functions() {
+    let compiled =
+        compile_str("fn main() {\n    putc('a');\n    putc('b');\n}\n").expect("compiles");
+
+    assert_eq!(cost_of(&compiled, "putc").calls, 2);
+}

@@ -390,6 +390,30 @@ what it does:
 
 Neither is a trick: they are just "call the big helper from one place".
 
+Finding *which* helper used to be guesswork. `--stats` now says:
+
+```bash
+$ cranium lobotomy.cra --stats -o lobotomy.bf
+cranium: 436450 brainfuck commands, 83 tape cells
+cranium: where the commands went:
+cranium:    305721 (70%)  print            8 calls, 46-151938
+cranium:     17985 ( 4%)  indent           1 call
+cranium:     10389 ( 2%)  println          18 calls, 23-1692
+cranium:      8547 ( 1%)  emit             1 call
+cranium: note: `print` is inlined 8 times; calling it from one place would save
+cranium:       roughly 153783 commands, about 35% of the program
+```
+
+The number is what each function's *own* body contributed, with the calls it
+made subtracted — so the column adds up rather than counting nested calls
+twice, and the percentages partition the program.
+
+Where call sites differ wildly the report gives a range instead of an average,
+because they often do: `print` above runs from 46 commands to 151,938. The
+cheap ones are strings and the expensive one is a number, which is the
+decimal-conversion routine showing up exactly where the advice above says it
+will.
+
 **Arrays are walked, not addressed.** `a[3]` is free — the compiler knows the
 cell. `a[i]` is not: the program carries `i` rightwards one element at a time,
 reads or writes there, and follows a trail of breadcrumbs back. That costs

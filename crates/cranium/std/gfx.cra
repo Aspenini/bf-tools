@@ -60,9 +60,13 @@ fn set_rgb(r: byte, g: byte, b: byte) {
 // Emit one character cell from `gfx_cell`.
 //
 // This loops over the components instead of naming them, which looks like the
-// long way round and is not: every `print` of a number emits a whole decimal
-// conversion routine, and Cranium inlines every call, so six `print` calls in
-// the source would be six copies of that routine in the output. One is one.
+// long way round and is not. Every `print` of a number emits a whole decimal
+// conversion routine, and Cranium inlines every call, so naming all six
+// components would emit six copies of it.
+//
+// `cranium --stats` puts a number on that: the number `print` below costs
+// about 34,000 Brainfuck commands, against 92 for each of the string prints
+// above it. Six of the expensive one would be most of the program.
 // --------------------------------------------------------------------------
 fn gfx_emit_cell() {
     let layer: byte = 0;
