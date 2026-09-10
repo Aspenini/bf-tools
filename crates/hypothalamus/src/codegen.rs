@@ -71,6 +71,19 @@ pub struct CodegenOptions {
     pub runtime: Runtime,
 }
 
+impl CodegenOptions {
+    /// Options for a hosted program that will run in the JIT.
+    ///
+    /// The JIT hands `.` and `,` to a [`crate::jit::Host`], which moves raw
+    /// bytes, so there are no text-mode streams to correct on the way in.
+    pub fn for_jit() -> Self {
+        Self {
+            binary_stdio: false,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for CodegenOptions {
     fn default() -> Self {
         Self {

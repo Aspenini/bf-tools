@@ -517,7 +517,7 @@ fn run_in_process(config: &CompilerConfig) -> Result<(), DriverError> {
         ..config.codegen_options()
     };
 
-    jit::run(&ops, &options, config.isa_options())
+    jit::run(&ops, &options, config.isa_options(), &mut jit::Stdio::new())
         .map(|_status| ())
         .map_err(DriverError::Runtime)
 }
