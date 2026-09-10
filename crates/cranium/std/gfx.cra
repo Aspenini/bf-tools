@@ -1,0 +1,166 @@
+// Pixel graphics in a terminal.
+//
+//     import "std/gfx.cra";
+//
+// The terminal is the display. Each character cell holds two pixels: U+2580
+// UPPER HALF BLOCK draws the top one in the foreground colour and lets the
+// bottom one show through behind it. Both are set with 24-bit ANSI escapes, so
+// this wants a truecolour terminal - Windows Terminal, iTerm2, and most Linux
+// terminals qualify.
+//
+// A program supplies the picture by defining `shade`, which this file calls
+// for every pixel and which answers with `set_rgb`:
+//
+//     import "std/gfx.cra";
+//
+//     fn shade(x: byte, y: byte) {
+//         set_rgb(x * 4, y * 8, 255 - x * 4);
+//     }
+//
+//     fn main() {
+//         present();
+//     }
+//
+// Cranium has one namespace and inlines every call, so `present` calling a
+// `shade` this file never defines is resolved at compile time. That is what
+// stands in for a function pointer, which a Brainfuck tape has no way to hold.
+//
+// There is deliberately no framebuffer. An array indexed at run time costs
+// roughly i^2 steps to reach element i, so a 2048-pixel buffer takes about half
+// a second to fill; walking the screen in scan order and asking for each pixel
+// as it is emitted takes about 17 ms.
+
+// --------------------------------------------------------------------------
+// SCREEN
+//
+// Pixels, not character cells. The height must be even, since two pixels share
+// a cell. Assign these before calling `present` to change the size.
+// --------------------------------------------------------------------------
+let gfx_w: byte = 64;
+let gfx_h: byte = 32;
+
+// The colour `shade` last answered with. Use `set_rgb` rather than these.
+let gfx_r: byte = 0;
+let gfx_g: byte = 0;
+let gfx_b: byte = 0;
+
+// The six components of the cell being emitted: top pixel, then bottom.
+let gfx_cell: byte[6] = [0, 0, 0, 0, 0, 0];
+
+// --------------------------------------------------------------------------
+// The answer `shade` gives.
+// --------------------------------------------------------------------------
+fn set_rgb(r: byte, g: byte, b: byte) {
+    gfx_r = r;
+    gfx_g = g;
+    gfx_b = b;
+}
+
+// --------------------------------------------------------------------------
+// Emit one character cell from `gfx_cell`.
+//
+// This loops over the components instead of naming them, which looks like the
+// long way round and is not: every `print` of a number emits a whole decimal
+// conversion routine, and Cranium inlines every call, so six `print` calls in
+// the source would be six copies of that routine in the output. One is one.
+// --------------------------------------------------------------------------
+fn gfx_emit_cell() {
+    let layer: byte = 0;
+    while layer < 2 {
+        putc(27);
+        putc('[');
+        if layer == 0 {
+            print("38;2;");
+        } else {
+            print("48;2;");
+        }
+
+        let part: byte = 0;
+        while part < 3 {
+            print(gfx_cell[layer * 3 + part]);
+            if part < 2 {
+                putc(';');
+            }
+            part = part + 1;
+        }
+
+        putc('m');
+        layer = layer + 1;
+    }
+
+    // U+2580, three bytes of UTF-8.
+    putc(226);
+    putc(150);
+    putc(128);
+}
+
+// --------------------------------------------------------------------------
+// DRAWING
+// --------------------------------------------------------------------------
+
+// Draw the whole screen, calling `shade` for every pixel.
+fn present() {
+    let y: byte = 0;
+    while y < gfx_h {
+        let x: byte = 0;
+        while x < gfx_w {
+            shade(x, y);
+            gfx_cell[0] = gfx_r;
+            gfx_cell[1] = gfx_g;
+            gfx_cell[2] = gfx_b;
+
+            shade(x, y + 1);
+            gfx_cell[3] = gfx_r;
+            gfx_cell[4] = gfx_g;
+            gfx_cell[5] = gfx_b;
+
+            gfx_emit_cell();
+            x = x + 1;
+        }
+
+        // Hand the terminal its own colours back before the newline, or the
+        // last background smears across the rest of the line.
+        reset_color();
+        putc(10);
+
+        y = y + 2;
+    }
+}
+
+// Put the cursor back at the top left, so the next `present` overwrites the
+// last one instead of scrolling it away. This is what makes animation work.
+fn home() {
+    putc(27);
+    putc('[');
+    putc('H');
+}
+
+// Drop back to the terminal's own colours.
+fn reset_color() {
+    putc(27);
+    putc('[');
+    putc('0');
+    putc('m');
+}
+
+// Clear the screen and home the cursor.
+fn clear() {
+    reset_color();
+    putc(27);
+    putc('[');
+    putc('2');
+    putc('J');
+    home();
+}
+
+// A cursor blinking over a picture is a distraction; call `show_cursor` before
+// the program ends, or the terminal keeps it hidden afterwards.
+fn hide_cursor() {
+    putc(27);
+    print("[?25l");
+}
+
+fn show_cursor() {
+    putc(27);
+    print("[?25h");
+}

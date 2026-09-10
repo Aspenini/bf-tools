@@ -123,18 +123,46 @@ positioning, erase, SGR, tabs, wrapping and scrolling.
 ## Graphics, with nothing on the other end
 
 One byte out is enough for pixels, as long as the thing receiving them already
-knows how to draw. A terminal does.
-[`truecolor.cra`](examples/truecolor.cra) draws a 64x32 image by printing two
-24-bit ANSI colours and a `▀` per character cell — the top pixel in the
-foreground colour, the bottom one showing through behind it:
+knows how to draw. A terminal does. [`std/gfx.cra`](std/gfx.cra) gives each
+character cell two pixels — `▀` draws the top one in the foreground colour and
+lets the bottom one show through behind it — and sets both with 24-bit ANSI
+escapes:
 
-```bash
-cranium truecolor.cra --run
+```rust
+import "std/gfx.cra";
+
+// Called once per pixel, in scan order.
+fn shade(x: byte, y: byte) {
+    set_rgb(x * 4, y * 8, 255 - x * 4);
+}
+
+fn main() {
+    present();
+}
 ```
 
-No library, no window, no driver, and nothing added to the language. It
-compiles to 125K Brainfuck commands over 87 tape cells, and a frame takes
-about 17 ms, so it animates at around 60 fps.
+That is [`truecolor.cra`](examples/truecolor.cra) in full. No window, no
+driver, no runtime, and nothing added to the language: 64x32 pixels out of 140K
+Brainfuck commands and 91 tape cells, at about 18 ms a frame.
+
+**There is no framebuffer, on purpose.** An array indexed at run time costs
+roughly `i²` steps to reach element `i`, and it shows:
+
+| Pixels held in an array | One full sweep |
+| --- | --- |
+| 512 | 39 ms |
+| 1024 | 136 ms |
+| 2048 | 482 ms |
+
+A 64x32 buffer is 2048 pixels, so `plot(x, y)` into one would cap out near two
+frames a second. Walking the screen and asking for each pixel as it is emitted
+costs 18 ms instead, which is why `present` calls `shade` rather than the other
+way round.
+
+That inversion needs a function pointer, which a Brainfuck tape has no way to
+hold. It works anyway because Cranium has one namespace and inlines every call:
+`present` calls a `shade` that `std/gfx.cra` never defines, and the program's
+own definition is what it resolves to, at compile time.
 
 Input works too, though the terminal has to be asked. `,` blocks and stdin is
 line-buffered, neither of which a game loop wants; both are the shell's to fix,
@@ -220,6 +248,19 @@ Two consequences worth knowing:
 
 An import cycle is an error rather than something to untangle at run time. See
 [`examples/project`](examples/project) for a worked example.
+
+#### The bundled library
+
+`std/` is answered from inside the compiler rather than from disk, so there is
+nothing to download, vendor, or keep up to date:
+
+```rust
+import "std/gfx.cra";          // works from any directory, with no std/ in it
+```
+
+The prefix is reserved — a directory called `std` beside a program does not
+shadow it — so an import means the same thing wherever the program is compiled.
+[`std/`](std) is what there is; today that is [`gfx.cra`](std/gfx.cra).
 
 ### Declarations
 

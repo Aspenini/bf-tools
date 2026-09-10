@@ -71,6 +71,54 @@ impl fmt::Display for LoadError {
     }
 }
 
+/// The library that ships inside the compiler.
+///
+/// `import "std/gfx.cra"` is answered from here rather than from disk, so a
+/// program can use it with nothing installed beside it and no copy to keep up
+/// to date. Every [`Loader`] gets this, because it is handled before the
+/// loader is asked.
+pub const STD: &[(&str, &str)] = &[("std/gfx.cra", include_str!("../std/gfx.cra"))];
+
+/// The prefix that names the bundled library.
+///
+/// It is reserved: a directory called `std` beside a program does not shadow
+/// it, so an import means the same thing wherever the program is compiled.
+pub const STD_PREFIX: &str = "std/";
+
+/// Return the bundled source for `name`, if there is one.
+pub fn std_source(name: &str) -> Option<&'static str> {
+    STD.iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, source)| *source)
+}
+
+/// Resolve an import written inside `from` against the bundled library.
+///
+/// Returns `None` when the import is nothing to do with the library, so the
+/// caller should ask the loader instead.
+fn resolve_std(from: &str, path: &str) -> Option<Result<String, String>> {
+    // A file in the library may import a sibling by its bare name.
+    let name = if path.starts_with(STD_PREFIX) {
+        path.to_string()
+    } else if from.starts_with(STD_PREFIX) {
+        format!("{STD_PREFIX}{path}")
+    } else {
+        return None;
+    };
+
+    if std_source(&name).is_some() {
+        return Some(Ok(name));
+    }
+
+    Some(Err(format!(
+        "no `{name}` in the standard library; it has {}",
+        STD.iter()
+            .map(|(candidate, _)| *candidate)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
 /// Where source text comes from.
 ///
 /// Splitting this out keeps the compiler testable without a filesystem, and
@@ -277,12 +325,15 @@ impl Gatherer<'_> {
             }));
         }
 
-        let source = self.loader.read(name).map_err(|message| {
-            GatherError::Load(LoadError {
-                message,
-                span: from,
-            })
-        })?;
+        let source = match std_source(name) {
+            Some(source) => source.to_string(),
+            None => self.loader.read(name).map_err(|message| {
+                GatherError::Load(LoadError {
+                    message,
+                    span: from,
+                })
+            })?,
+        };
 
         let file = self.sources.add(name);
         let tokens = lexer::tokenize(&source, file).map_err(GatherError::Lex)?;
@@ -293,7 +344,12 @@ impl Gatherer<'_> {
         for item in program.items {
             match item {
                 Item::Import { path, span } => {
-                    let target = self.loader.resolve(name, &path).map_err(|message| {
+                    // The bundled library is answered before the loader is
+                    // asked, so it reaches every loader and cannot be shadowed
+                    // by a directory that happens to be called `std`.
+                    let resolved = resolve_std(name, &path)
+                        .unwrap_or_else(|| self.loader.resolve(name, &path));
+                    let target = resolved.map_err(|message| {
                         GatherError::Load(LoadError {
                             message,
                             span: Some(span),
@@ -320,6 +376,88 @@ mod tests {
 
     fn names_of(loaded: &Loaded) -> Vec<&str> {
         loaded.sources.names().collect()
+    }
+
+    #[test]
+    fn the_bundled_library_needs_no_filesystem() {
+        // `Memory` knows nothing about `std/gfx.cra`, and does not have to.
+        let mut loader = Memory::new([(
+            "main.cra",
+            "import \"std/gfx.cra\";
+fn shade(x: byte, y: byte) { set_rgb(x, y, 0); }
+fn main() { }
+",
+        )]);
+        let loaded = gather("main.cra", &mut loader).expect("loads");
+
+        assert_eq!(names_of(&loaded), ["main.cra", "std/gfx.cra"]);
+    }
+
+    #[test]
+    fn a_local_std_directory_does_not_shadow_the_bundled_one() {
+        // The prefix is reserved, so an import means the same thing wherever
+        // the program is compiled.
+        let mut loader = Memory::new([
+            (
+                "main.cra",
+                "import \"std/gfx.cra\";
+fn main() { }
+",
+            ),
+            (
+                "std/gfx.cra",
+                "const GFX_IMPOSTOR = 1;
+",
+            ),
+        ]);
+        let loaded = gather("main.cra", &mut loader).expect("loads");
+
+        assert!(
+            !loaded
+                .program
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Const { name, .. } if name == "GFX_IMPOSTOR")),
+            "a local file shadowed the bundled library"
+        );
+    }
+
+    #[test]
+    fn an_unknown_bundled_file_says_what_there_is() {
+        let mut loader = Memory::new([(
+            "main.cra",
+            "import \"std/nope.cra\";
+fn main() { }
+",
+        )]);
+        let failure = gather("main.cra", &mut loader).expect_err("no such file");
+
+        let GatherError::Load(error) = failure.error else {
+            panic!("expected a load error");
+        };
+        assert!(error.message.contains("std/nope.cra"), "{}", error.message);
+        assert!(error.message.contains("std/gfx.cra"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_bundled_file_can_import_a_sibling_by_bare_name() {
+        assert_eq!(
+            resolve_std("std/gfx.cra", "gfx.cra"),
+            Some(Ok("std/gfx.cra".to_string()))
+        );
+        // An ordinary file's ordinary import is left to the loader.
+        assert_eq!(resolve_std("main.cra", "lib.cra"), None);
+    }
+
+    #[test]
+    fn every_bundled_file_parses() {
+        for (name, source) in STD {
+            let mut sources = SourceMap::default();
+            let file = sources.add(name);
+            let tokens = lexer::tokenize(source, file)
+                .unwrap_or_else(|error| panic!("{name}: {}", error.message));
+            parser::parse(tokens).unwrap_or_else(|error| panic!("{name}: {}", error.message));
+        }
     }
 
     #[test]
