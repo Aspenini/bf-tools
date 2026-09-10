@@ -1,0 +1,89 @@
+// Graphics with no runtime at all.
+//
+//     cranium truecolor.cra --run
+//
+// Nothing here talks to a library, a window, or a driver. It prints bytes to
+// standard output, and the terminal - which is already a display, on every
+// machine - turns them into pixels. The whole program still compiles to
+// Brainfuck.
+//
+// Each character cell holds two pixels: U+2580 UPPER HALF BLOCK draws the top
+// one in the foreground colour and lets the bottom one show through behind it.
+// Both colours are set with 24-bit ANSI escapes, so this needs a terminal with
+// truecolour support - Windows Terminal, iTerm2, and most Linux terminals.
+
+const W = 64;
+const H = 32;
+
+// The six colour components of one cell: the top pixel, then the bottom.
+let cell: byte[6] = [0, 0, 0, 0, 0, 0];
+
+// --------------------------------------------------------------------------
+// Emit one character cell: two escape sequences and a half block.
+//
+// This loops over the components instead of naming them, which looks like the
+// long way round and is not. Every `print` of a number emits a whole decimal
+// conversion routine, and Cranium inlines every call, so six `print` calls in
+// the source would be six copies of that routine in the output. One is one.
+// --------------------------------------------------------------------------
+fn emit_cell() {
+    let layer: byte = 0;
+    while layer < 2 {
+        putc(27);
+        putc('[');
+        if layer == 0 {
+            print("38;2;");
+        } else {
+            print("48;2;");
+        }
+
+        let part: byte = 0;
+        while part < 3 {
+            print(cell[layer * 3 + part]);
+            if part < 2 {
+                putc(';');
+            }
+            part = part + 1;
+        }
+
+        putc('m');
+        layer = layer + 1;
+    }
+
+    // U+2580, three bytes of UTF-8.
+    putc(226);
+    putc(150);
+    putc(128);
+}
+
+fn main() {
+    let y: byte = 0;
+    while y < H {
+        let x: byte = 0;
+        while x < W {
+            let across = x * 4;
+
+            // Top pixel at (x, y), bottom pixel at (x, y + 1).
+            cell[0] = across;
+            cell[1] = y * 8;
+            cell[2] = 255 - across;
+
+            cell[3] = across;
+            cell[4] = (y + 1) * 8;
+            cell[5] = 255 - across;
+
+            emit_cell();
+            x = x + 1;
+        }
+
+        // Back to the terminal's own colours before the newline, or the last
+        // background would smear across the rest of the line.
+        putc(27);
+        putc('[');
+        putc('0');
+        putc('m');
+        putc(10);
+
+        y = y + 2;
+    }
+}

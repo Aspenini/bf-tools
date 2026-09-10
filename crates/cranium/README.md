@@ -120,6 +120,36 @@ interface is one byte in and one byte out, with no syscall to reach for.
 Everything between those two ends is there: cursor motion, absolute
 positioning, erase, SGR, tabs, wrapping and scrolling.
 
+## Graphics, with nothing on the other end
+
+One byte out is enough for pixels, as long as the thing receiving them already
+knows how to draw. A terminal does.
+[`truecolor.cra`](examples/truecolor.cra) draws a 64x32 image by printing two
+24-bit ANSI colours and a `▀` per character cell — the top pixel in the
+foreground colour, the bottom one showing through behind it:
+
+```bash
+cranium truecolor.cra --run
+```
+
+No library, no window, no driver, and nothing added to the language. It
+compiles to 125K Brainfuck commands over 87 tape cells, and a frame takes
+about 17 ms, so it animates at around 60 fps.
+
+Input works too, though the terminal has to be asked. `,` blocks and stdin is
+line-buffered, neither of which a game loop wants; both are the shell's to fix,
+not the program's:
+
+```bash
+stty -icanon -echo min 0 time 0     # unbuffered, and reads return immediately
+```
+
+`getc` allocates a fresh cell before reading and Brainfuck leaves that cell
+alone at end of input, so "no key" arrives as `0` and a program can poll.
+
+For a real framebuffer and a keyboard that needs no `stty`, there is
+[`occipital`](../occipital) — but that is a runtime, and this is not.
+
 ## The language
 
 ### Types

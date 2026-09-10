@@ -1079,3 +1079,36 @@ count 3, mean 5 #####
 "
     );
 }
+
+/// Graphics with no runtime: the terminal is the display, so the whole
+/// "driver" is an escape sequence per pixel pair.
+#[test]
+fn truecolor_draws_a_gradient_out_of_half_blocks() {
+    let frame = run(include_str!("../examples/truecolor.cra"));
+
+    // 64x32 pixels is 16 rows of 64 cells, each cell two vertical pixels.
+    let rows: Vec<&str> = frame.lines().collect();
+    assert_eq!(rows.len(), 16, "wrong number of text rows");
+    for row in &rows {
+        assert_eq!(
+            row.matches('\u{2580}').count(),
+            64,
+            "a row is not 64 cells wide"
+        );
+        // Each row hands the terminal its colours back before the newline.
+        assert!(row.ends_with("\u{1b}[0m"), "a row did not reset the colour");
+    }
+
+    // The first cell is the top-left pixel and the one below it: the gradient
+    // runs blue at x = 0 and green down the y axis.
+    assert!(
+        frame.starts_with("\u{1b}[38;2;0;0;255m\u{1b}[48;2;0;8;255m\u{2580}"),
+        "{:?}",
+        &frame[..frame.len().min(60)]
+    );
+
+    // Every pixel is a full 24-bit colour, and both layers of every cell are
+    // set, or a cell would inherit whatever came before it.
+    assert_eq!(frame.matches("\u{1b}[38;2;").count(), 16 * 64);
+    assert_eq!(frame.matches("\u{1b}[48;2;").count(), 16 * 64);
+}
