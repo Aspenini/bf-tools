@@ -8,16 +8,12 @@
 //     cranium lucky_tape.cra -o lucky_tape.bf
 //     hypothalamus lucky_tape.bf -o lucky_tape --opt-level 1
 
+// The same generator this file used to carry: one multiply, one add.
+import "std/random.cra";
+
 let credits: int = 100;
 let spins: int = 0;
 let biggest_win: int = 0;
-
-let rng: int = 43981;
-
-fn random() -> byte {
-    rng = rng * 25173 + 13849;
-    return (rng >> 8) as byte;
-}
 
 fn symbol_name(symbol: byte) {
     if symbol == 0 {

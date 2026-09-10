@@ -39,6 +39,7 @@
 //     printf '....q' | cranium bounce.cra --run
 
 import "std/gfx.cra";
+import "std/math.cra";
 
 // Half-width of the ball, as a diamond: |dx| + |dy| under this is inside it.
 // A circle would want dx*dx + dy*dy, and a 16-bit multiply per pixel is the
@@ -66,21 +67,10 @@ let tick: byte = 0;
 // Called once per pixel by `present`, in scan order.
 // --------------------------------------------------------------------------
 fn shade(x: byte, y: byte) {
-    // Distance to the ball, without a signed type: subtract the smaller from
-    // the larger.
-    let dx: byte = 0;
-    if x > ball_x {
-        dx = x - ball_x;
-    } else {
-        dx = ball_x - x;
-    }
-
-    let dy: byte = 0;
-    if y > ball_y {
-        dy = y - ball_y;
-    } else {
-        dy = ball_y - y;
-    }
+    // Distance to the ball. `byte` is unsigned, so subtracting the larger
+    // would wrap; `abs_diff` is that comparison, written once.
+    let dx = abs_diff(x, ball_x);
+    let dy = abs_diff(y, ball_y);
 
     let reach = dx + dy;
     if reach < BALL {

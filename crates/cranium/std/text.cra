@@ -1,0 +1,88 @@
+// Asking what a character is, and changing what it is.
+//
+//     import "std/text.cra";
+//
+// All of these are a comparison or two, which is what makes them worth having
+// as functions: every call is inlined, so a helper only stays cheap if it is
+// small.
+//
+// Everything here is ASCII. A byte is a byte, and Cranium has no notion of an
+// encoding to be wrong about.
+
+// The distance between 'a' and 'A'.
+const CASE_GAP = 32;
+
+// --------------------------------------------------------------------------
+// ASKING
+// --------------------------------------------------------------------------
+
+fn is_digit(c: byte) -> bool {
+    return c >= '0' && c <= '9';
+}
+
+fn is_lower(c: byte) -> bool {
+    return c >= 'a' && c <= 'z';
+}
+
+fn is_upper(c: byte) -> bool {
+    return c >= 'A' && c <= 'Z';
+}
+
+fn is_alpha(c: byte) -> bool {
+    return is_lower(c) || is_upper(c);
+}
+
+fn is_alnum(c: byte) -> bool {
+    return is_alpha(c) || is_digit(c);
+}
+
+// Space, tab, newline, carriage return, form feed, vertical tab.
+fn is_space(c: byte) -> bool {
+    return c == ' ' || (c >= 9 && c <= 13);
+}
+
+// Anything with a glyph, which is what can safely be drawn.
+fn is_printable(c: byte) -> bool {
+    return c >= 32 && c < 127;
+}
+
+// --------------------------------------------------------------------------
+// CHANGING
+// --------------------------------------------------------------------------
+
+fn to_upper(c: byte) -> byte {
+    if is_lower(c) {
+        return c - CASE_GAP;
+    }
+    return c;
+}
+
+fn to_lower(c: byte) -> byte {
+    if is_upper(c) {
+        return c + CASE_GAP;
+    }
+    return c;
+}
+
+// --------------------------------------------------------------------------
+// DIGITS
+// --------------------------------------------------------------------------
+
+// The value of a digit character, or 255 for anything else.
+//
+// 255 rather than 0, because 0 is what '0' means and a caller has to be able
+// to tell them apart.
+fn digit_value(c: byte) -> byte {
+    if is_digit(c) {
+        return c - '0';
+    }
+    return 255;
+}
+
+// The character for a digit, or '?' for anything above nine.
+fn digit_char(value: byte) -> byte {
+    if value > 9 {
+        return '?';
+    }
+    return value + '0';
+}

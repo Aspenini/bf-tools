@@ -1,0 +1,111 @@
+// Driving a terminal: the cursor, the screen, and colour.
+//
+//     import "std/term.cra";
+//
+// Nothing here is specific to graphics. `std/gfx.cra` imports this file for
+// the cursor and screen control it needs, but a program printing ordinary text
+// wants the same things and should not have to pull in a framebuffer to get
+// them.
+//
+// Everything is an ANSI escape sequence, which is what a terminal already
+// understands. The colour functions need a terminal that does 24-bit colour;
+// the cursor and screen ones work anywhere.
+
+// The byte that introduces every escape sequence.
+const ESC = 27;
+
+// --------------------------------------------------------------------------
+// THE CURSOR
+// --------------------------------------------------------------------------
+
+// Back to the top left. Redrawing from here overwrites the last frame rather
+// than scrolling it away, which is the whole of how animation works.
+fn home() {
+    putc(ESC);
+    putc('[');
+    putc('H');
+}
+
+// Move to a character cell, counting from 0. Terminals count from 1, so this
+// adds the difference.
+//
+// Costs more than the rest of this file: the row and column are printed as
+// decimal, and each `print` of a number emits a conversion routine. Prefer
+// `home` and redrawing in order when you can.
+fn at(column: byte, row: byte) {
+    putc(ESC);
+    putc('[');
+    print(row + 1);
+    putc(';');
+    print(column + 1);
+    putc('H');
+}
+
+fn hide_cursor() {
+    putc(ESC);
+    print("[?25l");
+}
+
+// Call this before the program ends, or the terminal keeps the cursor hidden
+// afterwards.
+fn show_cursor() {
+    putc(ESC);
+    print("[?25h");
+}
+
+// --------------------------------------------------------------------------
+// THE SCREEN
+// --------------------------------------------------------------------------
+
+// Wipe the screen and put the cursor back at the top left.
+fn clear() {
+    reset_color();
+    putc(ESC);
+    print("[2J");
+    home();
+}
+
+// Erase from the cursor to the end of the line.
+//
+// Useful when redrawing in place: a shorter line would otherwise leave the
+// tail of the last one behind.
+fn clear_line() {
+    putc(ESC);
+    print("[K");
+}
+
+// --------------------------------------------------------------------------
+// COLOUR
+// --------------------------------------------------------------------------
+
+// Back to whatever colours the terminal was using.
+fn reset_color() {
+    putc(ESC);
+    putc('[');
+    putc('0');
+    putc('m');
+}
+
+// Set the colour text is drawn in.
+fn set_fg(r: byte, g: byte, b: byte) {
+    putc(ESC);
+    print("[38;2;");
+    print(r);
+    putc(';');
+    print(g);
+    putc(';');
+    print(b);
+    putc('m');
+}
+
+// Set the colour behind the text.
+fn set_bg(r: byte, g: byte, b: byte) {
+    putc(ESC);
+    print("[48;2;");
+    print(r);
+    putc(';');
+    print(g);
+    putc(';');
+    print(b);
+    putc('m');
+}

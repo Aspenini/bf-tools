@@ -29,6 +29,12 @@
 // roughly i^2 steps to reach element i, so a 2048-pixel buffer takes about half
 // a second to fill; walking the screen in scan order and asking for each pixel
 // as it is emitted takes about 17 ms.
+//
+// The cursor and screen control an animated program needs - `home`, `clear`,
+// `hide_cursor` and the rest - lives in `std/term.cra`, which this file
+// imports and re-exports by virtue of there being one namespace.
+
+import "term.cra";
 
 // --------------------------------------------------------------------------
 // SCREEN
@@ -129,42 +135,4 @@ fn present() {
 
         y = y + 2;
     }
-}
-
-// Put the cursor back at the top left, so the next `present` overwrites the
-// last one instead of scrolling it away. This is what makes animation work.
-fn home() {
-    putc(27);
-    putc('[');
-    putc('H');
-}
-
-// Drop back to the terminal's own colours.
-fn reset_color() {
-    putc(27);
-    putc('[');
-    putc('0');
-    putc('m');
-}
-
-// Clear the screen and home the cursor.
-fn clear() {
-    reset_color();
-    putc(27);
-    putc('[');
-    putc('2');
-    putc('J');
-    home();
-}
-
-// A cursor blinking over a picture is a distraction; call `show_cursor` before
-// the program ends, or the terminal keeps it hidden afterwards.
-fn hide_cursor() {
-    putc(27);
-    print("[?25l");
-}
-
-fn show_cursor() {
-    putc(27);
-    print("[?25h");
 }

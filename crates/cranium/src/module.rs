@@ -77,7 +77,13 @@ impl fmt::Display for LoadError {
 /// program can use it with nothing installed beside it and no copy to keep up
 /// to date. Every [`Loader`] gets this, because it is handled before the
 /// loader is asked.
-pub const STD: &[(&str, &str)] = &[("std/gfx.cra", include_str!("../std/gfx.cra"))];
+pub const STD: &[(&str, &str)] = &[
+    ("std/gfx.cra", include_str!("../std/gfx.cra")),
+    ("std/math.cra", include_str!("../std/math.cra")),
+    ("std/random.cra", include_str!("../std/random.cra")),
+    ("std/term.cra", include_str!("../std/term.cra")),
+    ("std/text.cra", include_str!("../std/text.cra")),
+];
 
 /// The prefix that names the bundled library.
 ///
@@ -390,7 +396,12 @@ fn main() { }
         )]);
         let loaded = gather("main.cra", &mut loader).expect("loads");
 
-        assert_eq!(names_of(&loaded), ["main.cra", "std/gfx.cra"]);
+        // `std/gfx.cra` imports `term.cra` by its bare name, so the library
+        // reaching its own siblings is part of what is being checked here.
+        assert_eq!(
+            names_of(&loaded),
+            ["main.cra", "std/gfx.cra", "std/term.cra"]
+        );
     }
 
     #[test]

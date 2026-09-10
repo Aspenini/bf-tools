@@ -1,0 +1,60 @@
+// Numbers that look unpredictable enough for a game.
+//
+//     import "std/random.cra";
+//
+// A linear congruential generator: one multiply and one add, which is about
+// all a 16-bit tape wants to pay. It is not random and must not be used for
+// anything that matters, but it is fine for shuffling a maze or rolling a
+// reel.
+//
+// The sequence is the same every run, because a Brainfuck program has no clock
+// and no entropy to ask for. Call `seed` with something the player did - how
+// many keys they pressed before starting, say - if that matters.
+
+// The generator's whole state.
+//
+// The constants are the ZX81's: with a 16-bit modulus they give a full period
+// and mix the high bits well, which is the half worth reading.
+let rng_state: int = 43981;
+
+const RNG_MULTIPLIER = 25173;
+const RNG_INCREMENT = 13849;
+
+// Start the sequence somewhere else.
+fn seed(value: int) {
+    rng_state = value;
+}
+
+// The next byte.
+//
+// The high half of the state, because the low bits of an LCG cycle far too
+// visibly: the lowest one alternates every single call.
+fn random() -> byte {
+    rng_state = rng_state * RNG_MULTIPLIER + RNG_INCREMENT;
+    return (rng_state >> 8) as byte;
+}
+
+// The next value below `limit`, or 0 if `limit` is 0.
+//
+// This is a modulo, so values below `256 % limit` come up very slightly more
+// often. At the scale anything here runs at, that is not worth the loop it
+// would take to correct.
+fn random_below(limit: byte) -> byte {
+    if limit == 0 {
+        return 0;
+    }
+    return random() % limit;
+}
+
+// The next value in `low..=high`, or `low` if the range is backwards.
+fn random_between(low: byte, high: byte) -> byte {
+    if high <= low {
+        return low;
+    }
+    return low + random_below(high - low + 1);
+}
+
+// True about one time in `chance`.
+fn random_chance(chance: byte) -> bool {
+    return random_below(chance) == 0;
+}

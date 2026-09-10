@@ -1311,3 +1311,155 @@ fn builtins_are_counted_alongside_functions() {
 
     assert_eq!(cost_of(&compiled, "putc").calls, 2);
 }
+
+// ---- the bundled library -------------------------------------------------
+
+/// Compile and run a program that imports from `std/`.
+fn run_std(body: &str) -> String {
+    run(body)
+}
+
+#[test]
+fn std_math_compares_clamps_and_measures_distance() {
+    let out = run_std(
+        r#"
+import "std/math.cra";
+
+fn main() {
+    print(min(3, 9)); print(max(3, 9)); putc(' ');
+    print(clamp(99, 10, 20)); print(clamp(1, 10, 20)); print(clamp(15, 10, 20)); putc(' ');
+    print(abs_diff(3, 9)); print(abs_diff(9, 3)); putc(' ');
+    print(min_int(300, 40000)); putc(' ');
+    print(abs_diff_int(40000, 300));
+}
+"#,
+    );
+
+    // min/max, then three clamps (20, 10, 15), then two distances.
+    assert_eq!(out, "39 201015 66 300 39700");
+}
+
+#[test]
+fn std_math_abs_survives_the_value_with_no_positive() {
+    // -128 has no `sbyte` opposite, which is why `abs` returns `byte`.
+    let out = run_std(
+        "import \"std/math.cra\";\nfn main() { print(abs(-5)); putc(' '); print(abs(5)); putc(' '); print(abs(-128)); }\n",
+    );
+
+    assert_eq!(out, "5 5 128");
+}
+
+#[test]
+fn std_math_gcd_and_pow() {
+    let out = run_std(
+        "import \"std/math.cra\";\nfn main() { print(gcd(48, 18)); putc(' '); print(gcd(7, 0)); putc(' '); print(pow(3, 4)); putc(' '); print(pow(5, 0)); }\n",
+    );
+
+    assert_eq!(out, "6 7 81 1");
+}
+
+#[test]
+fn std_math_isqrt_lands_on_the_whole_part() {
+    let out = run_std(
+        r#"
+import "std/math.cra";
+
+fn main() {
+    print(isqrt(0)); putc(' ');
+    print(isqrt(1)); putc(' ');
+    print(isqrt(15)); putc(' ');
+    print(isqrt(16)); putc(' ');
+    print(isqrt(255)); putc(' ');
+    print(isqrt(65535));
+}
+"#,
+    );
+
+    // The whole part, never the rounded one: 15 gives 3, not 4.
+    assert_eq!(out, "0 1 3 4 15 255");
+}
+
+#[test]
+fn std_text_classifies_and_converts() {
+    let out = run_std(
+        r#"
+import "std/text.cra";
+
+fn main() {
+    print(is_digit('5')); print(is_digit('x'));
+    print(is_alpha('g')); print(is_alpha('5'));
+    print(is_space(10)); print(is_space('x'));
+    print(is_printable(65)); print(is_printable(200));
+    putc(' ');
+    putc(to_upper('q')); putc(to_upper('Z')); putc(to_upper('7'));
+    putc(to_lower('Q')); putc(to_lower('z'));
+    putc(' ');
+    print(digit_value('7')); putc(' '); print(digit_value('x')); putc(' ');
+    putc(digit_char(4)); putc(digit_char(12));
+}
+"#,
+    );
+
+    assert_eq!(out, "10101010 QZ7qz 7 255 4?");
+}
+
+#[test]
+fn std_random_is_reproducible_and_stays_in_range() {
+    let out = run_std(
+        r#"
+import "std/random.cra";
+
+fn main() {
+    // A Brainfuck program has no clock, so the sequence is the same every run.
+    seed(1234);
+    let first = random();
+    seed(1234);
+    print(first == random());
+
+    putc(' ');
+    let outside = false;
+    for i in 0..40 {
+        let value = random_between(5, 7);
+        if value < 5 || value > 7 {
+            outside = true;
+        }
+    }
+    print(outside);
+
+    putc(' ');
+    print(random_below(0));
+    print(random_chance(1));
+}
+"#,
+    );
+
+    // Reproducible, never outside the range, 0 for an empty range, and a
+    // one-in-one chance always happens.
+    assert_eq!(out, "1 0 01");
+}
+
+#[test]
+fn a_function_only_std_module_costs_nothing_unused() {
+    let bare = compile_str("fn main() { println(\"hi\"); }\n").expect("compiles");
+    let imported = compile_str(
+        "import \"std/math.cra\";\nimport \"std/text.cra\";\nimport \"std/term.cra\";\nfn main() { println(\"hi\"); }\n",
+    )
+    .expect("compiles");
+
+    // Functions are only emitted where they are called, so importing three
+    // modules and using none of them changes nothing at all.
+    assert_eq!(bare.code, imported.code);
+    assert_eq!(bare.cells_used, imported.cells_used);
+}
+
+#[test]
+fn gfx_takes_its_terminal_control_from_term() {
+    // `home` and the rest live in `std/term.cra` now; importing `std/gfx.cra`
+    // still has to reach them, or every animated program breaks.
+    let compiled = compile_str(
+        "import \"std/gfx.cra\";\nfn shade(x: byte, y: byte) { set_rgb(x, y, 0); }\nfn main() { home(); clear(); hide_cursor(); show_cursor(); }\n",
+    )
+    .expect("gfx should re-export the terminal control it imports");
+
+    assert!(!compiled.code.is_empty());
+}

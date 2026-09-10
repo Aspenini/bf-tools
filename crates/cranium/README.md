@@ -303,12 +303,37 @@ An import cycle is an error rather than something to untangle at run time. See
 nothing to download, vendor, or keep up to date:
 
 ```rust
-import "std/gfx.cra";          // works from any directory, with no std/ in it
+import "std/math.cra";         // works from any directory, with no std/ in it
 ```
 
 The prefix is reserved — a directory called `std` beside a program does not
 shadow it — so an import means the same thing wherever the program is compiled.
-[`std/`](std) is what there is; today that is [`gfx.cra`](std/gfx.cra).
+
+| File | What |
+| --- | --- |
+| [`math.cra`](std/math.cra) | `min`, `max`, `clamp`, `abs`, `abs_diff`, `gcd`, `pow`, `isqrt` |
+| [`text.cra`](std/text.cra) | `is_digit`, `is_alpha`, `is_space`, `to_upper`, `to_lower`, `digit_value` |
+| [`term.cra`](std/term.cra) | The cursor, the screen, and 24-bit colour |
+| [`random.cra`](std/random.cra) | A linear congruential generator |
+| [`gfx.cra`](std/gfx.cra) | Pixel graphics, on top of `term.cra` |
+
+Two things follow from how Cranium compiles, and both are worth knowing before
+reaching for any of it.
+
+**An unused import costs nothing.** Functions are only emitted where they are
+called, so importing `math`, `text` and `term` and using none of them produces
+a byte-for-byte identical program. A module with a global is the exception —
+`random.cra` keeps its state in one, which costs the 168 commands that
+initialise it whether it is used or not.
+
+**Everything is inlined, so nothing here is large.** A helper called from ten
+places emits its body ten times, which is why the whole library is comparisons
+and arithmetic rather than anything ambitious. `--stats` will tell you when one
+has grown into a problem.
+
+There is one namespace across a program, so a file of your own defining `min`
+cannot also import `std/math.cra`. That is a compile error naming both, not a
+silent shadowing.
 
 ### Declarations
 

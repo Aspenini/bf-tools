@@ -1,0 +1,147 @@
+// Small numeric helpers.
+//
+//     import "std/math.cra";
+//
+// Every call is inlined, so these are all deliberately tiny: a function big
+// enough to be worth reusing is also big enough that reusing it is what makes
+// a program large. `cranium --stats` will show you which ones grew.
+//
+// Cranium has no generics, so a function works on the type it names. The plain
+// names take `byte`, and the `_int` ones take `int`.
+
+// --------------------------------------------------------------------------
+// COMPARING
+// --------------------------------------------------------------------------
+
+fn min(a: byte, b: byte) -> byte {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+fn max(a: byte, b: byte) -> byte {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn min_int(a: int, b: int) -> int {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+fn max_int(a: int, b: int) -> int {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+// Pull `value` into `low..=high`.
+fn clamp(value: byte, low: byte, high: byte) -> byte {
+    if value < low {
+        return low;
+    }
+    if value > high {
+        return high;
+    }
+    return value;
+}
+
+// --------------------------------------------------------------------------
+// DISTANCE
+// --------------------------------------------------------------------------
+
+// How far apart two values are.
+//
+// `byte` is unsigned, so `a - b` wraps when `b` is the larger. Subtracting the
+// smaller from the larger is the way to ask the question without reaching for
+// a signed type.
+fn abs_diff(a: byte, b: byte) -> byte {
+    if a > b {
+        return a - b;
+    }
+    return b - a;
+}
+
+fn abs_diff_int(a: int, b: int) -> int {
+    if a > b {
+        return a - b;
+    }
+    return b - a;
+}
+
+// The distance of a signed value from zero.
+//
+// Returns `byte`, because -128 has no positive `sbyte`.
+fn abs(value: sbyte) -> byte {
+    if value < 0 {
+        return (0 - value as sint) as byte;
+    }
+    return value as byte;
+}
+
+// --------------------------------------------------------------------------
+// ARITHMETIC
+// --------------------------------------------------------------------------
+
+// The largest number that divides both, by Euclid. Written as a loop because
+// Brainfuck has no call stack and Cranium therefore has no recursion.
+fn gcd(a: byte, b: byte) -> byte {
+    let x = a;
+    let y = b;
+
+    while y != 0 {
+        let next = x % y;
+        x = y;
+        y = next;
+    }
+
+    return x;
+}
+
+// The whole part of a square root, digit by digit in binary.
+//
+// About eight passes rather than the couple of hundred a search from zero
+// would take, which matters: every operation here is 16-bit.
+fn isqrt(value: int) -> byte {
+    let rest: int = value;
+    let root: int = 0;
+
+    // The largest power of four that fits in an `int`, walked down until it is
+    // no bigger than the value.
+    let bit: int = 16384;
+    while bit > rest {
+        bit = bit >> 2;
+    }
+
+    while bit != 0 {
+        let step: int = root + bit;
+        if rest >= step {
+            rest = rest - step;
+            root = (root >> 1) + bit;
+        } else {
+            root = root >> 1;
+        }
+        bit = bit >> 2;
+    }
+
+    return root as byte;
+}
+
+// `base` to the power of `exponent`, wrapping like every other byte operation.
+fn pow(base: byte, exponent: byte) -> byte {
+    let result: byte = 1;
+    let left = exponent;
+
+    while left != 0 {
+        result = result * base;
+        left = left - 1;
+    }
+
+    return result;
+}
