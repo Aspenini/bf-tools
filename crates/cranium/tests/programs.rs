@@ -1179,3 +1179,21 @@ fn bounce_example_compiles() {
         "the demo should not want a big tape"
     );
 }
+
+/// The raycaster is the biggest example by a wide margin - about 1.9M
+/// Brainfuck commands - so running it here is out of the question. This checks
+/// it still compiles, which is what would break if `std/gfx.cra` changed under
+/// it.
+#[test]
+fn raycaster_example_compiles() {
+    let compiled = compile_str(include_str!("../examples/raycaster.cra"))
+        .expect("raycaster.cra should compile");
+
+    assert!(compiled.code.len() > 1_000_000, "suspiciously small");
+    // The 16x16 map and the three per-column arrays are most of the tape.
+    assert!(
+        (2_000..4_000).contains(&compiled.cells_used),
+        "unexpected tape size: {}",
+        compiled.cells_used
+    );
+}

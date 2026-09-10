@@ -202,6 +202,27 @@ is tested:
 printf '....q' | cranium bounce.cra --run
 ```
 
+### A raycaster
+
+[`raycaster.cra`](examples/raycaster.cra) is a first-person maze in pixels —
+fixed-point rays, perspective walls, distance shading, and a green exit to find:
+
+```bash
+cranium raycaster.cra --run
+```
+
+It needs no `stty`, because it is turn-based: nothing moves until you type a
+command, so there is nothing to poll for.
+
+It is also where the scan-order design earns itself. A ray belongs to a
+*column*, not a pixel, so casting one per `shade` call would mean 2048 casts a
+frame instead of 64. Instead `cast_scene` runs first and leaves one entry per
+column behind, and `shade` only looks up the column its pixel landed in. Three
+small array reads per pixel cost about 13 ms; the whole frame is 22 ms.
+
+At 1.9M Brainfuck commands it is the largest example here, and most of the
+second it takes to start is `hypothalamus` compiling that.
+
 ## The language
 
 ### Types

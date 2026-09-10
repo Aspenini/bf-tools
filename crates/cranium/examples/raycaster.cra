@@ -1,14 +1,15 @@
 // CRANIUM RAYCASTER
 //
-// A tiny first-person raycaster written in Cranium,
-// which means this entire thing can compile to Brainfuck.
+// A first-person raycaster in actual pixels, which means this entire thing
+// still compiles to Brainfuck.
 //
-// Run directly:
 //     cranium raycaster.cra --run
 //
-// Or embrace insanity:
+// Or the long way round:
+//
 //     cranium raycaster.cra -o raycaster.bf --stats
-//     hypothalamus raycaster.bf -o raycaster --opt-level 1
+//     hypothalamus raycaster.bf -o raycaster
+//     ./raycaster
 //
 // Controls:
 //     w = forward
@@ -17,14 +18,30 @@
 //     d = turn right
 //     q = quit
 //
-// Normal terminals are line-buffered, so press Enter after a command.
+// Reads block here, unlike `bounce.cra`, because this is turn-based: nothing
+// moves until you say so, so there is nothing to poll for and no `stty` to
+// set. Press Enter after each command, as any line-buffered terminal expects.
+//
+// HOW IT DRAWS
+//
+// `std/gfx.cra` walks the screen and asks for one pixel at a time, in scan
+// order, which is the wrong order for a raycaster: a ray belongs to a column,
+// not a pixel, and casting one per pixel would mean 2048 casts a frame rather
+// than 64.
+//
+// So `cast_scene` runs first and leaves one entry per column behind. By the
+// time `shade` is called it only has to look up the column the pixel landed
+// in and decide whether that pixel is ceiling, wall, or floor.
+
+import "std/gfx.cra";
 
 const MAP_W = 16;
 const MAP_H = 16;
 
-const VIEW_W = 24;
-const VIEW_H = 15;
-const HALF_VIEW = 12;
+// The view is the whole screen, and the screen is what `std/gfx.cra` says.
+const VIEW_W = 64;
+const VIEW_H = 32;
+const HALF_VIEW = 32;
 
 const MAX_RAY_STEPS = 80;
 
@@ -33,6 +50,14 @@ const MAX_RAY_STEPS = 80;
 // 64 units = one map tile.
 const FIX_SHIFT = 6;
 const FIX = 64;
+
+// How far apart the rays fan out. The old 24-column view divided by 16; this
+// one is wider, so the divisor grows with it to keep the same field of view.
+const FOV_DIVISOR = 43;
+
+// Wall height at distance 1. The old view used 96 over 15 rows; this keeps the
+// same ratio over 32.
+const PROJECTION = 205;
 
 // --------------------------------------------------------------------------
 // WORLD
@@ -44,7 +69,6 @@ const FIX = 64;
 // This array is deliberately first because the raycaster constantly performs
 // runtime indexing into it. Cranium puts earlier arrays closer on the tape.
 // --------------------------------------------------------------------------
-
 let world: byte[256] = [
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
     1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
@@ -64,10 +88,12 @@ let world: byte[256] = [
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
 ];
 
-// One result per screen column.
-let heights: byte[24];
-let depths: byte[24];
-let hits: byte[24];
+// One result per screen column, filled by `cast_scene` and read by `shade`.
+// `heights` comes first because it is read for every pixel; the other two only
+// for pixels that turned out to be wall.
+let heights: byte[64];
+let depths: byte[64];
+let hits: byte[64];
 
 // --------------------------------------------------------------------------
 // DIRECTION TABLE
@@ -122,16 +148,6 @@ let moves: int = 0;
 // BASIC HELPERS
 // --------------------------------------------------------------------------
 
-fn clear_screen() {
-    // ANSI:
-    // ESC [ 2 J
-    // ESC [ H
-    putc(27);
-    print("[2J");
-    putc(27);
-    print("[H");
-}
-
 fn world_at(x: byte, y: byte) -> byte {
     if x >= MAP_W || y >= MAP_H {
         return 1;
@@ -140,21 +156,23 @@ fn world_at(x: byte, y: byte) -> byte {
     return world[y as int * MAP_W + x as int];
 }
 
+// Two characters wide always, so a shorter name cannot leave the tail of a
+// longer one behind on the line.
 fn direction_name() {
     if heading == 0 {
-        print("E");
+        print("E ");
     } else if heading == 1 {
         print("SE");
     } else if heading == 2 {
-        print("S");
+        print("S ");
     } else if heading == 3 {
         print("SW");
     } else if heading == 4 {
-        print("W");
+        print("W ");
     } else if heading == 5 {
         print("NW");
     } else if heading == 6 {
-        print("N");
+        print("N ");
     } else {
         print("NE");
     }
@@ -177,19 +195,17 @@ fn cast_column(column: byte) {
 
     // Screen position relative to the center.
     //
-    // -12 ... +11
+    // -32 ... +31
     let offset: sint = column as sint - HALF_VIEW as sint;
 
     // Camera ray:
     //
     // forward + right * screen_offset
-    //
-    // Division by 16 controls field of view.
     let ray_dx: sint =
-        forward_x + (right_x * offset) / 16;
+        forward_x + (right_x * offset) / FOV_DIVISOR;
 
     let ray_dy: sint =
-        forward_y + (right_y * offset) / 16;
+        forward_y + (right_y * offset) / FOV_DIVISOR;
 
     // Rays move about 1/8th of a tile on each iteration.
     let step_x: sint = ray_dx / 8;
@@ -228,7 +244,7 @@ fn cast_column(column: byte) {
     //
     // Nearby walls become tall.
     // Distant walls become short.
-    let height = 96 / distance;
+    let height = PROJECTION / distance;
 
     if height < 1 {
         height = 1;
@@ -248,78 +264,51 @@ fn cast_scene() {
 }
 
 // --------------------------------------------------------------------------
-// WALL SHADING
+// SHADING
+//
+// Called once per pixel by `present`, after `cast_scene` has left the columns
+// behind. Every constant here is chosen so the brightest result still fits in
+// a byte: overflow does not clip, it wraps, and a wall lit past 255 comes back
+// round as a dark one.
 // --------------------------------------------------------------------------
+fn shade(x: byte, y: byte) {
+    let height = heights[x];
 
-fn wall_character(distance: byte, wall: byte) -> byte {
-    // The exit is visually distinct.
-    if wall == 2 {
-        return 'X';
-    }
+    // Centre the wall vertically. A shift rather than a divide, because this
+    // runs 2048 times a frame.
+    let top = (VIEW_H - height) >> 1;
+    let bottom = top + height;
 
-    if distance <= 8 {
-        return '#';
-    }
+    if y < top {
+        // Ceiling, lightening towards the horizon.
+        set_rgb(14 + y, 16 + y, 44 + y * 2);
+    } else if y < bottom {
+        let distance = depths[x];
+        let kind = hits[x];
 
-    if distance <= 16 {
-        return 'O';
-    }
-
-    if distance <= 28 {
-        return 'o';
-    }
-
-    if distance <= 42 {
-        return ':';
-    }
-
-    return '.';
-}
-
-// --------------------------------------------------------------------------
-// RENDERER
-// --------------------------------------------------------------------------
-
-fn draw_view() {
-    cast_scene();
-
-    println("+------------------------+");
-
-    for row in 0..VIEW_H {
-        putc('|');
-
-        for column in 0..VIEW_W {
-            let height = heights[column];
-
-            let top = (VIEW_H - height) / 2;
-            let bottom = top + height;
-
-            if row < top {
-                // Ceiling.
-                putc(' ');
-            } else if row < bottom {
-                // Wall.
-                putc(wall_character(
-                    depths[column],
-                    hits[column]
-                ));
-            } else {
-                // Floor.
-                if row == VIEW_H - 1 {
-                    putc('_');
-                } else if (row + column) % 2 == 0 {
-                    putc('.');
-                } else {
-                    putc(' ');
-                }
-            }
+        // Near walls are brighter. The falloff is steep and stops early
+        // because of what this maze actually contains: rays travel in eighths
+        // of a tile and nearly every wall comes back between 7 and 20 steps
+        // away, so spreading the range over the 80 a ray *could* travel would
+        // put almost every wall in the same few shades. `lit` tops out at 62.
+        let lit = 0;
+        if distance < 32 {
+            lit = (32 - distance) * 2;
         }
 
-        putc('|');
-        putc('\n');
+        if kind == 2 {
+            // The exit, and the only green in the maze.
+            set_rgb(20 + lit, 120 + lit * 2, 40 + lit);
+        } else {
+            // A wide range on purpose: a near wall is pale stone and a far one
+            // is nearly black, which is the only depth cue there is. The
+            // brightest is 40 + 177, still inside a byte.
+            set_rgb(40 + lit * 3, 36 + lit * 3, 28 + lit * 2);
+        }
+    } else {
+        // Floor, brightening towards the viewer.
+        set_rgb(34 + y, 26 + y, 18);
     }
-
-    println("+------------------------+");
 }
 
 // --------------------------------------------------------------------------
@@ -388,7 +377,7 @@ fn read_command() -> byte {
         }
 
         // Ignore terminal line endings and whitespace.
-        if c != '\n' && c != 13 && c != ' ' {
+        if c != 10 && c != 13 && c != ' ' {
             return c;
         }
     }
@@ -396,22 +385,21 @@ fn read_command() -> byte {
 
 // --------------------------------------------------------------------------
 // HUD
+//
+// Printed under the picture rather than over it, so it needs no cursor
+// positioning. `home` overwrites the screen rather than clearing it, so every
+// line has to be at least as long as the one it replaces.
 // --------------------------------------------------------------------------
-
 fn draw_hud() {
-    println("");
+    reset_color();
+
     print("Facing: ");
     direction_name();
+    print("   Moves: ");
+    print(moves);
+    println("        ");
 
-    print("    Moves: ");
-    println(moves);
-
-    println("");
-    println("w forward   s backward");
-    println("a left      d right");
-    println("q quit");
-    println("");
-    println("Find the X wall.");
+    println("w/s move   a/d turn   q quit   -   find the green wall");
     print("> ");
 }
 
@@ -420,13 +408,14 @@ fn draw_hud() {
 // --------------------------------------------------------------------------
 
 fn main() {
+    clear();
+
     while running {
-        clear_screen();
+        cast_scene();
 
-        println("CRANIUM RAYCASTER");
-        println("");
-
-        draw_view();
+        // Back to the top left, so this frame lands on top of the last one.
+        home();
+        present();
         draw_hud();
 
         let command = read_command();
@@ -444,7 +433,7 @@ fn main() {
         }
     }
 
-    clear_screen();
+    clear();
 
     if won {
         println("");
