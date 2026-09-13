@@ -338,8 +338,16 @@
           "value": "["
         },
         {
-          "type": "SYMBOL",
-          "name": "integer"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "integer"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         },
         {
           "type": "STRING",

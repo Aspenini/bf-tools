@@ -89,7 +89,10 @@ module.exports = grammar({
     // same thing.
     type: ($) => prec.right(seq($.primitive_type, repeat($.array_length))),
 
-    array_length: ($) => seq('[', $.integer, ']'),
+    // The length can be left out, as in `s: byte[]`, a parameter taking an
+    // array of any length. The compiler allows that only for parameters, but
+    // an editor just needs to see that it is a type.
+    array_length: ($) => seq('[', optional($.integer), ']'),
 
     primitive_type: () => choice('byte', 'int', 'sbyte', 'sint', 'bool'),
 
