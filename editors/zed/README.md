@@ -40,7 +40,7 @@ If `wernicke` is not on your `PATH`, point at it in your Zed settings:
 
 The grammar itself is [`editors/tree-sitter-cranium`](../tree-sitter-cranium),
 in this repository rather than one of its own. `extension.toml` points at it
-with a `path`, pinned to the commit that added it — so **bump `rev` whenever
+with a `path`, pinned to a commit — so **bump `rev` whenever
 the grammar changes**, or Zed will keep building the old one.
 
 This directory is excluded from the Cargo workspace: Zed compiles it to

@@ -8,7 +8,7 @@ repository = "https://github.com/Aspenini/bf-tools"
 
 [grammars.cranium]
 repository = "https://github.com/Aspenini/bf-tools"
-rev = "22cd43ae083a949145f4912c86a08c77efa0d027"
+rev = "9ba821e8df6845a29c85dc75b853a43074e18e15"
 # The grammar lives in this repository rather than one of its own. `path` is
 # not in Zed's documentation but is part of its manifest, and is how a grammar
 # in a subdirectory is found.
