@@ -84,6 +84,7 @@ pub const STD: &[(&str, &str)] = &[
     ("std/string.cra", include_str!("../std/string.cra")),
     ("std/term.cra", include_str!("../std/term.cra")),
     ("std/text.cra", include_str!("../std/text.cra")),
+    ("std/tui.cra", include_str!("../std/tui.cra")),
 ];
 
 /// The prefix that names the bundled library.

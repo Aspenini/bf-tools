@@ -1818,3 +1818,341 @@ fn a_branch_that_cannot_run_costs_nothing_and_is_not_reported() {
         with_dead_branch.costs
     );
 }
+
+// ---- std/tui.cra ---------------------------------------------------------------
+
+/// Play a program's output onto a grid of character cells, as a terminal would,
+/// and return the rows with trailing spaces trimmed.
+///
+/// Only understands what std/term.cra and std/tui.cra send - placing the
+/// cursor, clearing the screen, erasing to the end of a line, newlines - and
+/// skips colour and mode changes, which do not move anything.
+fn screen(output: &str, columns: usize, rows: usize) -> Vec<String> {
+    let blank = || vec![vec![' '; columns]; rows];
+    let mut grid = blank();
+    let (mut row, mut column) = (0_usize, 0_usize);
+    let mut chars = output.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                if chars.peek() != Some(&'[') {
+                    continue;
+                }
+                chars.next();
+                let mut params = String::new();
+                let mut command = ' ';
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        command = next;
+                        break;
+                    }
+                    params.push(next);
+                }
+                match command {
+                    'H' => {
+                        let mut parts = params
+                            .split(';')
+                            .map(|part| part.parse::<usize>().unwrap_or(1));
+                        row = parts.next().unwrap_or(1).saturating_sub(1);
+                        column = parts.next().unwrap_or(1).saturating_sub(1);
+                    }
+                    'J' if params == "2" => grid = blank(),
+                    'K' if row < rows => {
+                        for cell in grid[row].iter_mut().skip(column) {
+                            *cell = ' ';
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            '\n' => {
+                row += 1;
+                column = 0;
+            }
+            '\r' => column = 0,
+            _ => {
+                if row < rows && column < columns {
+                    grid[row][column] = c;
+                }
+                column += 1;
+            }
+        }
+    }
+    grid.into_iter()
+        .map(|cells| cells.into_iter().collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn tui_draws_boxes_in_every_border_style() {
+    let output = run(r#"
+import "std/tui.cra";
+
+fn main() {
+    ui_box(0, 0, 6, 3, BORDER_SINGLE);
+    ui_box(6, 0, 6, 3, BORDER_ROUNDED);
+    ui_box(12, 0, 6, 3, BORDER_DOUBLE);
+    ui_box(18, 0, 6, 3, BORDER_HEAVY);
+    ui_box(24, 0, 6, 3, BORDER_ASCII);
+    ui_window(0, 3, 16, 4, "Title", BORDER_SINGLE);
+    ui_divider(0, 5, 16, BORDER_SINGLE);
+    ui_window(16, 3, 8, 3, "Much too long", BORDER_DOUBLE);
+}
+"#);
+    assert_eq!(
+        screen(&output, 32, 7),
+        [
+            "┌────┐╭────╮╔════╗┏━━━━┓+----+",
+            "│    ││    │║    ║┃    ┃|    |",
+            "└────┘╰────╯╚════╝┗━━━━┛+----+",
+            "┌─── Title ────┐╔ Much ╗",
+            "│              │║      ║",
+            "├──────────────┤╚══════╝",
+            "└──────────────┘",
+        ]
+    );
+}
+
+#[test]
+fn tui_labels_align_pad_and_cut_short() {
+    let output = run(r#"
+import "std/tui.cra";
+
+fn main() {
+    ui_label(0, 0, 10, "left", ALIGN_LEFT);
+    ui_label(0, 1, 10, "mid", ALIGN_CENTER);
+    ui_label(0, 2, 10, "right", ALIGN_RIGHT);
+    ui_label(0, 3, 4, "truncated", ALIGN_LEFT);
+    // A shorter label over a longer one leaves nothing of it behind.
+    ui_label(0, 4, 10, "long label", ALIGN_LEFT);
+    ui_label(0, 4, 10, "short", ALIGN_LEFT);
+    ui_status_bar(5, 10, "status");
+}
+"#);
+    assert_eq!(
+        screen(&output, 12, 6),
+        ["left", "   mid", "     right", "trun", "short", "status"]
+    );
+    assert!(
+        output.contains("\u{1b}[7m\u{1b}[6;1Hstatus    \u{1b}[27m"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn tui_progress_bars_fill_to_an_eighth_of_a_cell() {
+    let output = run(r#"
+import "std/tui.cra";
+
+fn main() {
+    ui_progress(0, 0, 8, 0, 10);
+    ui_progress(0, 1, 8, 5, 10);
+    ui_progress(0, 2, 8, 10, 10);
+    ui_progress(0, 3, 8, 99, 10);
+    ui_progress(0, 4, 8, 1, 3);
+    ui_progress(0, 5, 4, 3, 0);
+}
+"#);
+    assert_eq!(
+        screen(&output, 10, 6),
+        [
+            "░░░░░░░░",
+            "████░░░░",
+            "████████",
+            "████████",
+            // 8 / 3 is 2 whole cells and 2/3 of another, which is 5 eighths.
+            "██▋░░░░░",
+            "░░░░",
+        ]
+    );
+}
+
+#[test]
+fn tui_menus_and_tabs_reverse_the_selected_choice() {
+    let output = run(r#"
+import "std/tui.cra";
+
+fn main() {
+    ui_menu(0, 0, 8, "Open|Save|Quit", 1);
+    ui_tabs(0, 4, "One|Two", 0);
+    print(ui_menu_count("Open|Save|Quit"));
+    putc(' ');
+    print(ui_menu_count(""));
+    putc(' ');
+    print(ui_menu_move(0, KEY_UP, 3));
+    print(ui_menu_move(2, KEY_DOWN, 3));
+    print(ui_menu_move(1, KEY_DOWN, 3));
+    print(ui_menu_move(1, KEY_END, 3));
+    print(ui_menu_move(2, KEY_HOME, 3));
+    print(ui_menu_move(1, 'x', 3));
+    putc(' ');
+    print(ui_tabs_move(0, KEY_LEFT, 2));
+    print(ui_tabs_move(1, KEY_RIGHT, 2));
+}
+"#);
+    let rows = screen(&output, 30, 5);
+    assert_eq!(rows[..3], [" Open", " Save", " Quit"]);
+    assert_eq!(rows[4], " One   Two 3 0 202201 10");
+    assert!(output.contains("\u{1b}[7m Save   \u{1b}[27m"), "{output:?}");
+    assert!(output.contains("\u{1b}[7m One \u{1b}[27m"), "{output:?}");
+    assert!(!output.contains("\u{1b}[7m Open"), "{output:?}");
+}
+
+#[test]
+fn tui_reads_whole_escape_sequences_as_one_key() {
+    let source = r#"
+import "std/tui.cra";
+
+fn main() {
+    loop {
+        let key = ui_key();
+        if key == KEY_NONE {
+            break;
+        }
+        print(key);
+        putc(' ');
+    }
+}
+"#;
+    let keys: &[u8] = b"a\r\n\x08\x7f\t\x1b[A\x1b[B\x1b[C\x1b[D\x1bOA\x1b[H\x1b[F\x1b[1~\x1b[4~\x1b[3~\x1b[5~\x1b[6~\x1b[1;5C\x1bxq";
+    assert_eq!(
+        run_with(source, keys),
+        "97 10 10 127 127 9 128 129 130 131 128 132 133 132 133 134 135 136 130 27 113 "
+    );
+}
+
+#[test]
+fn tui_edits_a_field_within_its_buffer() {
+    let output = run(r#"
+import "std/tui.cra";
+
+let buffer: byte[6] = "ab";
+
+fn show(changed: bool) {
+    if changed {
+        putc('+');
+    } else {
+        putc('-');
+    }
+    puts(buffer);
+    putc(' ');
+}
+
+fn main() {
+    show(ui_edit(buffer, 'c'));
+    show(ui_edit(buffer, KEY_UP));
+    show(ui_edit(buffer, KEY_ENTER));
+    show(ui_edit(buffer, 'd'));
+    show(ui_edit(buffer, 'e'));
+    // Five characters and the terminator fill six cells.
+    show(ui_edit(buffer, 'f'));
+    show(ui_edit(buffer, KEY_BACKSPACE));
+    show(ui_edit(buffer, KEY_BACKSPACE));
+    show(ui_edit(buffer, KEY_BACKSPACE));
+    show(ui_edit(buffer, KEY_BACKSPACE));
+    show(ui_edit(buffer, KEY_BACKSPACE));
+    show(ui_edit(buffer, KEY_BACKSPACE));
+}
+"#);
+    assert_eq!(
+        output,
+        "+abc -abc -abc +abcd +abcde -abcde +abcd +abc +ab +a + - "
+    );
+}
+
+#[test]
+fn tui_colours_use_the_terminals_palette() {
+    let output = run(r#"
+import "std/tui.cra";
+
+fn main() {
+    ui_fg(RED);
+    ui_fg(BRIGHT + RED);
+    ui_fg(DEFAULT_COLOR);
+    ui_bg(BLUE);
+    ui_bg(BRIGHT + BLUE);
+    ui_bg(DEFAULT_COLOR);
+}
+"#);
+    assert_eq!(
+        output,
+        "\u{1b}[31m\u{1b}[91m\u{1b}[39m\u{1b}[44m\u{1b}[104m\u{1b}[49m"
+    );
+}
+
+#[test]
+fn tui_a_constant_style_keeps_only_that_style() {
+    let constant =
+        compile_str("import \"std/tui.cra\";\nfn main() { ui_box(0, 0, 10, 4, BORDER_DOUBLE); }\n")
+            .expect("compiles")
+            .code
+            .len();
+    let variable = compile_str(
+        "import \"std/tui.cra\";\nfn main() { let style = getc(); ui_box(0, 0, 10, 4, style); }\n",
+    )
+    .expect("compiles")
+    .code
+    .len();
+    assert!(
+        constant * 2 < variable,
+        "constant style {constant} commands, variable style {variable}"
+    );
+}
+
+#[test]
+fn settings_example_edits_saves_and_switches_tabs() {
+    let settings = compiled_runner(include_str!("../examples/settings.cra"));
+
+    // Into the name field, replace "Ada", pick the second theme, untick
+    // notifications, then press Save. End of input quits.
+    let profile = settings(b"\t\x7f\x7f\x7fGrace\t\x1b[B\t \t\t\r");
+    let rows = screen(&profile, 80, 19);
+    assert_eq!(
+        rows[1],
+        "  ╭─────────────── Cranium settings ───────────────╮"
+    );
+    assert_eq!(
+        rows[2],
+        "  │  Profile   Sound   About                       │"
+    );
+    assert_eq!(
+        rows[5],
+        "  │  Name         Grace                            │"
+    );
+    assert_eq!(
+        rows[11],
+        "  │  [ ] Notifications                             │"
+    );
+    assert_eq!(
+        rows[13],
+        "  │                            [ Save ]  [ Quit ]  │"
+    );
+    assert!(rows[17].starts_with(" Saved."), "{rows:#?}");
+    // Forest is highlighted later than Ocean last was.
+    assert!(
+        profile.rfind("\u{1b}[7m Forest") > profile.rfind("\u{1b}[7m Ocean"),
+        "{profile:?}"
+    );
+    // The terminal is handed back before the goodbye.
+    assert!(
+        profile.ends_with("\u{1b}[?25h\u{1b}[?1049lGoodbye, Grace.\n"),
+        "{profile:?}"
+    );
+
+    // Across to Sound, up two on the volume, then choose Mono.
+    let sound = settings(b"\x1b[C\t\x1b[C\x1b[C\t ");
+    let rows = screen(&sound, 80, 19);
+    assert_eq!(
+        rows[5],
+        "  │  Volume       ████████████████░░░░ 8/10        │"
+    );
+    assert_eq!(
+        rows[7],
+        "  │  Output       (*) Mono                         │"
+    );
+    assert_eq!(
+        rows[8],
+        "  │               ( ) Stereo                       │"
+    );
+    assert!(sound.ends_with("Goodbye, Ada.\n"), "{sound:?}");
+}

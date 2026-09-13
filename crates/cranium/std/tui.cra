@@ -1,0 +1,851 @@
+// Text user interfaces: windows, menus, buttons, fields, and the keys that
+// drive them.
+//
+//     import "std/tui.cra";
+//
+// Everything here is ANSI escape sequences and box-drawing characters, so it
+// wants a terminal that speaks UTF-8, which every modern one does. Colours are
+// the terminal's own 16, so a program looks at home in whatever theme the
+// terminal is using, and works where 24-bit colour does not.
+//
+// A SMALL PROGRAM
+//
+//     import "std/tui.cra";
+//
+//     fn main() {
+//         ui_begin();
+//         ui_fg(CYAN);
+//         ui_window(2, 1, 30, 7, "Hello", BORDER_ROUNDED);
+//         ui_fg(DEFAULT_COLOR);
+//         ui_label(3, 4, 28, "Press any key", ALIGN_CENTER);
+//         let key = ui_key();
+//         ui_end();
+//     }
+//
+// Coordinates are character cells counted from 0, column first, and nothing
+// here knows how big the terminal is - Brainfuck has no way to ask - so an
+// interface that fits in 80x24 fits everywhere.
+//
+// HOW A PROGRAM RUNS
+//
+// Draw the screen, wait for a key, change some state, draw again. There is no
+// widget tree to update and no record of what changed: a Brainfuck tape has
+// nowhere to keep one that is cheaper than drawing again, and a terminal
+// repaints a screen of text faster than anyone can press a key.
+//
+// Keys only arrive one at a time if the terminal stops collecting whole lines
+// first. That is the terminal's setting, not the program's:
+//
+//     stty -icanon -echo          # before
+//     cranium app.cra --run
+//     stty sane                   # after
+//
+// Reads then wait for a key, which is what an interface wants. `getc` answers
+// 0 at the end of piped input, and so `ui_key` answers KEY_NONE there: treat
+// that as "quit", or a program reading from a pipe spins forever once the pipe
+// is empty. (Add `min 0 time 0` to the stty for a program that animates while
+// it waits, as bounce.cra does; KEY_NONE then means nobody pressed anything.)
+//
+// WHAT COSTS WHAT
+//
+// Every call is inlined, so every call site pays for its own copy. What keeps
+// that affordable:
+//
+// - Styles, alignments, colours and flags are arguments, and a constant
+//   argument is known inside the function. `ui_box(..., BORDER_DOUBLE)` keeps
+//   only the code for double lines. Pass a style held in a variable and every
+//   style is compiled in, and chosen between at run time.
+// - Strings can be literals: `ui_label(0, 0, 20, "Name", ALIGN_LEFT)`.
+// - Placing the cursor prints two numbers, which makes it the most expensive
+//   thing most widgets do. A widget moves the cursor once and draws in order
+//   from there, and loops that draw row after row do it from one call site.
+//
+// `cranium --stats` shows where a program's commands went, function by
+// function, when one of these has grown into a problem.
+
+import "term.cra";
+import "string.cra";
+
+// --------------------------------------------------------------------------
+// COLOUR AND STYLE
+// --------------------------------------------------------------------------
+
+// The terminal's palette. Add BRIGHT for the lighter version of any of them:
+// `ui_fg(BRIGHT + BLUE)`.
+const BLACK = 0;
+const RED = 1;
+const GREEN = 2;
+const YELLOW = 3;
+const BLUE = 4;
+const MAGENTA = 5;
+const CYAN = 6;
+const WHITE = 7;
+const BRIGHT = 8;
+
+// Whatever the terminal draws with when nobody has asked for anything else.
+const DEFAULT_COLOR = 16;
+
+// The colour text is drawn in.
+fn ui_fg(color: byte) {
+    putc(ESC);
+    putc('[');
+    if color == DEFAULT_COLOR {
+        putc('3');
+        putc('9');
+    } else if color < BRIGHT {
+        putc('3');
+        putc('0' + color);
+    } else {
+        putc('9');
+        putc('0' + color - BRIGHT);
+    }
+    putc('m');
+}
+
+// The colour behind the text, which is also what `ui_fill` and the inside of
+// a box are painted with.
+fn ui_bg(color: byte) {
+    putc(ESC);
+    putc('[');
+    if color == DEFAULT_COLOR {
+        putc('4');
+        putc('9');
+    } else if color < BRIGHT {
+        putc('4');
+        putc('0' + color);
+    } else {
+        putc('1');
+        putc('0');
+        putc('0' + color - BRIGHT);
+    }
+    putc('m');
+}
+
+fn ui_bold() {
+    print("\e[1m");
+}
+
+fn ui_dim() {
+    print("\e[2m");
+}
+
+fn ui_underline() {
+    print("\e[4m");
+}
+
+// Swap the text and background colours. This is how the widgets here show
+// what is selected, because it reads clearly in every theme and on terminals
+// with no colour at all.
+fn ui_reverse() {
+    print("\e[7m");
+}
+
+// Back to plain text in the terminal's own colours.
+fn ui_plain() {
+    reset_color();
+}
+
+// --------------------------------------------------------------------------
+// THE SCREEN
+// --------------------------------------------------------------------------
+
+// Take over the terminal: switch to its alternate screen, hide the cursor and
+// clear. The alternate screen is what lets `ui_end` put back the shell's
+// scrollback exactly as it was.
+fn ui_begin() {
+    print("\e[?1049h");
+    hide_cursor();
+    clear();
+}
+
+// Hand the terminal back. Call this on every way out of a program, or the
+// shell is left on a blank screen with no cursor.
+fn ui_end() {
+    reset_color();
+    show_cursor();
+    print("\e[?1049l");
+}
+
+// --------------------------------------------------------------------------
+// KEYS
+// --------------------------------------------------------------------------
+
+// What `ui_key` answers. Printable characters are themselves, and so are the
+// control characters not named here; the keys with no character of their own
+// are numbered from 128, past anything a terminal sends as a single byte.
+const KEY_NONE = 0;
+const KEY_TAB = 9;
+const KEY_ENTER = 10;
+const KEY_ESCAPE = 27;
+const KEY_BACKSPACE = 127;
+const KEY_UP = 128;
+const KEY_DOWN = 129;
+const KEY_RIGHT = 130;
+const KEY_LEFT = 131;
+const KEY_HOME = 132;
+const KEY_END = 133;
+const KEY_DELETE = 134;
+const KEY_PAGE_UP = 135;
+const KEY_PAGE_DOWN = 136;
+
+// Read one key.
+//
+// Arrow keys and their friends arrive as several bytes - up is ESC [ A - and
+// this reads the whole sequence, so a program sees one KEY_UP rather than
+// three characters. Enter is KEY_ENTER whether the terminal sends a carriage
+// return or a newline, and backspace is KEY_BACKSPACE whichever of its two
+// codes it sends.
+//
+// Escape on its own is ambiguous: it is also how every sequence starts, so
+// this reads one more byte to tell which it was. With reads that wait, a lone
+// Escape therefore takes effect at the next key press, and that key is lost.
+fn ui_key() -> byte {
+    let c = getc();
+    if c == 13 {
+        return KEY_ENTER;
+    }
+    if c == 8 {
+        return KEY_BACKSPACE;
+    }
+    if c != ESC {
+        return c;
+    }
+
+    let kind = getc();
+    if kind != '[' && kind != 'O' {
+        return KEY_ESCAPE;
+    }
+
+    // Some keys carry a number first: ESC [ 3 ~ is delete, and ESC [ 1 ; 5 A
+    // is up with Ctrl held. Keep the first digit, which names the key, and
+    // skip the rest up to the letter or `~` that ends the sequence.
+    let code = getc();
+    let number: byte = 0;
+    if code - '0' < 10 {
+        number = code;
+        while code - '0' < 10 || code == ';' {
+            code = getc();
+        }
+    }
+
+    if code == 'A' {
+        return KEY_UP;
+    }
+    if code == 'B' {
+        return KEY_DOWN;
+    }
+    if code == 'C' {
+        return KEY_RIGHT;
+    }
+    if code == 'D' {
+        return KEY_LEFT;
+    }
+    if code == 'H' {
+        return KEY_HOME;
+    }
+    if code == 'F' {
+        return KEY_END;
+    }
+    if code == '~' {
+        if number == '1' || number == '7' {
+            return KEY_HOME;
+        }
+        if number == '4' || number == '8' {
+            return KEY_END;
+        }
+        if number == '3' {
+            return KEY_DELETE;
+        }
+        if number == '5' {
+            return KEY_PAGE_UP;
+        }
+        if number == '6' {
+            return KEY_PAGE_DOWN;
+        }
+    }
+    return KEY_NONE;
+}
+
+// --------------------------------------------------------------------------
+// DRAWING
+// --------------------------------------------------------------------------
+
+// `count` copies of the character `c`, from wherever the cursor is.
+fn ui_repeat(c: byte, count: byte) {
+    let left = count;
+    while left != 0 {
+        putc(c);
+        left -= 1;
+    }
+}
+
+// The first `count` characters of `text`, from wherever the cursor is.
+fn ui_write(text: byte[], count: byte) {
+    let i: byte = 0;
+    while i != count {
+        putc(text[i]);
+        i += 1;
+    }
+}
+
+// A rectangle of spaces, painted in the background colour.
+fn ui_fill(column: byte, row: byte, width: byte, height: byte) {
+    let y = row;
+    let left = height;
+    while left != 0 {
+        at(column, y);
+        ui_repeat(' ', width);
+        y += 1;
+        left -= 1;
+    }
+}
+
+// --------------------------------------------------------------------------
+// BORDERS
+// --------------------------------------------------------------------------
+
+const BORDER_SINGLE = 0;
+const BORDER_ROUNDED = 1;
+const BORDER_DOUBLE = 2;
+const BORDER_HEAVY = 3;
+// Dashes, bars and plus signs, for a terminal without box-drawing characters.
+const BORDER_ASCII = 4;
+
+// The pieces a border is drawn from.
+const EDGE_HORIZONTAL = 0;
+const EDGE_VERTICAL = 1;
+const CORNER_TOP_LEFT = 2;
+const CORNER_TOP_RIGHT = 3;
+const CORNER_BOTTOM_LEFT = 4;
+const CORNER_BOTTOM_RIGHT = 5;
+// Where a divider meets the left side, and the right.
+const TEE_LEFT = 6;
+const TEE_RIGHT = 7;
+
+// Draw one piece of a border in one style.
+//
+// Every box-drawing character is U+25xx, three bytes of UTF-8 that all start
+// with 226 and differ only in the last one or two, so this works out those two
+// bytes and prints once. With a constant style and piece - which is how the
+// rest of this file calls it - that is three `putc`s once the rest folds away.
+fn ui_border_glyph(style: byte, piece: byte) {
+    if style == BORDER_ASCII {
+        if piece == EDGE_HORIZONTAL {
+            putc('-');
+        } else if piece == EDGE_VERTICAL {
+            putc('|');
+        } else {
+            putc('+');
+        }
+        return;
+    }
+
+    // U+2500 to U+253F share a middle byte of 148, U+2540 to U+257F one of 149.
+    let middle: byte = 148;
+    let last: byte = 0;
+    if style == BORDER_DOUBLE {
+        // ═ ║ ╔ ╗ ╚ ╝ ╠ ╣
+        middle = 149;
+        if piece == EDGE_HORIZONTAL {
+            last = 144;
+        } else if piece == EDGE_VERTICAL {
+            last = 145;
+        } else if piece == CORNER_TOP_LEFT {
+            last = 148;
+        } else if piece == CORNER_TOP_RIGHT {
+            last = 151;
+        } else if piece == CORNER_BOTTOM_LEFT {
+            last = 154;
+        } else if piece == CORNER_BOTTOM_RIGHT {
+            last = 157;
+        } else if piece == TEE_LEFT {
+            last = 160;
+        } else {
+            last = 163;
+        }
+    } else if style == BORDER_HEAVY {
+        // ━ ┃ ┏ ┓ ┗ ┛ ┣ ┫
+        if piece == EDGE_HORIZONTAL {
+            last = 129;
+        } else if piece == EDGE_VERTICAL {
+            last = 131;
+        } else if piece == CORNER_TOP_LEFT {
+            last = 143;
+        } else if piece == CORNER_TOP_RIGHT {
+            last = 147;
+        } else if piece == CORNER_BOTTOM_LEFT {
+            last = 151;
+        } else if piece == CORNER_BOTTOM_RIGHT {
+            last = 155;
+        } else if piece == TEE_LEFT {
+            last = 163;
+        } else {
+            last = 171;
+        }
+    } else if style == BORDER_ROUNDED && piece >= CORNER_TOP_LEFT && piece <= CORNER_BOTTOM_RIGHT {
+        // ╭ ╮ ╰ ╯ - the only pieces a rounded border does not share with a
+        // single one.
+        middle = 149;
+        if piece == CORNER_TOP_LEFT {
+            last = 173;
+        } else if piece == CORNER_TOP_RIGHT {
+            last = 174;
+        } else if piece == CORNER_BOTTOM_LEFT {
+            last = 176;
+        } else {
+            last = 175;
+        }
+    } else {
+        // ─ │ ┌ ┐ └ ┘ ├ ┤
+        if piece == EDGE_HORIZONTAL {
+            last = 128;
+        } else if piece == EDGE_VERTICAL {
+            last = 130;
+        } else if piece == CORNER_TOP_LEFT {
+            last = 140;
+        } else if piece == CORNER_TOP_RIGHT {
+            last = 144;
+        } else if piece == CORNER_BOTTOM_LEFT {
+            last = 148;
+        } else if piece == CORNER_BOTTOM_RIGHT {
+            last = 152;
+        } else if piece == TEE_LEFT {
+            last = 156;
+        } else {
+            last = 164;
+        }
+    }
+    putc(226);
+    putc(middle);
+    putc(last);
+}
+
+// `count` of the same border piece in a row.
+fn ui_border_run(style: byte, piece: byte, count: byte) {
+    let left = count;
+    while left != 0 {
+        ui_border_glyph(style, piece);
+        left -= 1;
+    }
+}
+
+// A box, with its inside cleared to the background colour so that drawing one
+// over something else hides what was there. `width` and `height` count the
+// border, so both need to be at least 2.
+fn ui_box(column: byte, row: byte, width: byte, height: byte, style: byte) {
+    at(column, row);
+    ui_border_glyph(style, CORNER_TOP_LEFT);
+    ui_border_run(style, EDGE_HORIZONTAL, width - 2);
+    ui_border_glyph(style, CORNER_TOP_RIGHT);
+
+    let y = row + 1;
+    let left = height - 2;
+    while left != 0 {
+        at(column, y);
+        ui_border_glyph(style, EDGE_VERTICAL);
+        ui_repeat(' ', width - 2);
+        ui_border_glyph(style, EDGE_VERTICAL);
+        y += 1;
+        left -= 1;
+    }
+
+    at(column, y);
+    ui_border_glyph(style, CORNER_BOTTOM_LEFT);
+    ui_border_run(style, EDGE_HORIZONTAL, width - 2);
+    ui_border_glyph(style, CORNER_BOTTOM_RIGHT);
+}
+
+// A line across a box drawn with `ui_box` at the same column and width,
+// joining both of its sides.
+fn ui_divider(column: byte, row: byte, width: byte, style: byte) {
+    at(column, row);
+    ui_border_glyph(style, TEE_LEFT);
+    ui_border_run(style, EDGE_HORIZONTAL, width - 2);
+    ui_border_glyph(style, TEE_RIGHT);
+}
+
+// A box with a title set into the middle of its top edge. A title too long to
+// fit between the corners is cut short.
+fn ui_window(column: byte, row: byte, width: byte, height: byte, title: byte[], style: byte) {
+    ui_box(column, row, width, height, style);
+
+    let length = str_len(title);
+    if length == 0 {
+        return;
+    }
+    // A space either side of the title, and a border cell beyond each space.
+    if length > width - 4 {
+        length = width - 4;
+    }
+    at(column + ((width - length - 2) >> 1), row);
+    putc(' ');
+    ui_write(title, length);
+    putc(' ');
+}
+
+// --------------------------------------------------------------------------
+// TEXT
+// --------------------------------------------------------------------------
+
+const ALIGN_LEFT = 0;
+const ALIGN_CENTER = 1;
+const ALIGN_RIGHT = 2;
+
+// `text` in a space `width` cells wide: cut short if it is longer, and padded
+// with spaces to fill it if not, so a label drawn over a longer one leaves
+// nothing of the old one behind.
+fn ui_label(column: byte, row: byte, width: byte, text: byte[], align: byte) {
+    let length = str_len(text);
+    if length > width {
+        length = width;
+    }
+    let before: byte = 0;
+    if align == ALIGN_CENTER {
+        before = (width - length) >> 1;
+    } else if align == ALIGN_RIGHT {
+        before = width - length;
+    }
+
+    at(column, row);
+    ui_repeat(' ', before);
+    ui_write(text, length);
+    ui_repeat(' ', width - length - before);
+}
+
+// A line of reversed text across a row, for a title or a line of help at the
+// top or bottom of the screen.
+fn ui_status_bar(row: byte, width: byte, text: byte[]) {
+    ui_reverse();
+    ui_label(0, row, width, text, ALIGN_LEFT);
+    print("\e[27m");
+}
+
+// --------------------------------------------------------------------------
+// WIDGETS
+// --------------------------------------------------------------------------
+
+// A bar `width` cells wide, filled in proportion to `amount` out of `total`, to
+// an eighth of a cell. An `amount` past `total` fills it; a `total` of 0 leaves
+// it empty.
+fn ui_progress(column: byte, row: byte, width: byte, amount: byte, total: byte) {
+    let full: byte = 0;
+    let eighths: byte = 0;
+    if total != 0 {
+        let reached = amount;
+        if reached > total {
+            reached = total;
+        }
+        // `width * reached / total` whole cells, worked out one cell at a time
+        // with no multiplying or dividing - which, done on `int`s, came to
+        // twice the size of this whole function. `rest` stays below `total`,
+        // so adding `reached` would reach `total` exactly when `rest` has got
+        // as far as the gap between them; comparing with that gap means the
+        // sum never has to be held, and everything fits in a byte.
+        let gap = total - reached;
+        let rest: byte = 0;
+        let cells = width;
+        while cells != 0 {
+            if rest >= gap {
+                rest -= gap;
+                full += 1;
+            } else {
+                rest += reached;
+            }
+            cells -= 1;
+        }
+        // Then `8 * rest / total` the same way: how much of the next cell.
+        let part_gap = total - rest;
+        let part_rest: byte = 0;
+        let steps: byte = 8;
+        while steps != 0 {
+            if part_rest >= part_gap {
+                part_rest -= part_gap;
+                eighths += 1;
+            } else {
+                part_rest += rest;
+            }
+            steps -= 1;
+        }
+    }
+
+    at(column, row);
+    let left = full;
+    while left != 0 {
+        // █
+        putc(226);
+        putc(150);
+        putc(136);
+        left -= 1;
+    }
+    let empty = width - full;
+    if eighths != 0 {
+        // ▏ to ▉ run downwards from U+258F as they fill up.
+        putc(226);
+        putc(150);
+        putc(144 - eighths);
+        empty -= 1;
+    }
+    while empty != 0 {
+        // ░
+        putc(226);
+        putc(150);
+        putc(145);
+        empty -= 1;
+    }
+}
+
+// A button: `[ label ]`, reversed when it has the focus.
+fn ui_button(column: byte, row: byte, label: byte[], focused: bool) {
+    at(column, row);
+    if focused {
+        ui_reverse();
+    }
+    print("[ ");
+    puts(label);
+    print(" ]");
+    if focused {
+        print("\e[27m");
+    }
+}
+
+// A checkbox: `[x] label`, with the box reversed when it has the focus.
+fn ui_checkbox(column: byte, row: byte, label: byte[], checked: bool, focused: bool) {
+    at(column, row);
+    if focused {
+        ui_reverse();
+    }
+    if checked {
+        print("[x]");
+    } else {
+        print("[ ]");
+    }
+    if focused {
+        print("\e[27m");
+    }
+    putc(' ');
+    puts(label);
+}
+
+// One of a set of choices of which only one can be on: `(*) label`.
+fn ui_radio(column: byte, row: byte, label: byte[], chosen: bool, focused: bool) {
+    at(column, row);
+    if focused {
+        ui_reverse();
+    }
+    if chosen {
+        print("(*)");
+    } else {
+        print("( )");
+    }
+    if focused {
+        print("\e[27m");
+    }
+    putc(' ');
+    puts(label);
+}
+
+// --------------------------------------------------------------------------
+// MENUS AND TABS
+//
+// Cranium arrays cannot hold strings, so a list of choices is one string with
+// the choices separated by '|': "Open|Save|Quit".
+// --------------------------------------------------------------------------
+
+// How many choices `items` holds.
+fn ui_menu_count(items: byte[]) -> byte {
+    let length = str_len(items);
+    if length == 0 {
+        return 0;
+    }
+    let count: byte = 1;
+    let i: byte = 0;
+    while i != length {
+        if items[i] == '|' {
+            count += 1;
+        }
+        i += 1;
+    }
+    return count;
+}
+
+// A choice list, one choice to a row, `width` cells wide, with the choice
+// numbered `selected` reversed. Choices count from 0.
+fn ui_menu(column: byte, row: byte, width: byte, items: byte[], selected: byte) {
+    let length = str_len(items);
+    let i: byte = 0;
+    let index: byte = 0;
+    let more = true;
+    while more {
+        at(column, row + index);
+        if index == selected {
+            ui_reverse();
+        }
+        putc(' ');
+        let used: byte = 1;
+        loop {
+            if i == length {
+                more = false;
+                break;
+            }
+            let c = items[i];
+            i += 1;
+            if c == '|' {
+                break;
+            }
+            if used < width {
+                putc(c);
+                used += 1;
+            }
+        }
+        ui_repeat(' ', width - used);
+        if index == selected {
+            print("\e[27m");
+        }
+        index += 1;
+    }
+}
+
+// Choices side by side on one row, as a tab strip or a menu bar, with the one
+// numbered `selected` reversed.
+fn ui_tabs(column: byte, row: byte, items: byte[], selected: byte) {
+    let length = str_len(items);
+    at(column, row);
+    let i: byte = 0;
+    let index: byte = 0;
+    let more = true;
+    while more {
+        if index == selected {
+            ui_reverse();
+        }
+        putc(' ');
+        loop {
+            if i == length {
+                more = false;
+                break;
+            }
+            let c = items[i];
+            i += 1;
+            if c == '|' {
+                break;
+            }
+            putc(c);
+        }
+        putc(' ');
+        if index == selected {
+            print("\e[27m");
+        }
+        if more {
+            putc(' ');
+        }
+        index += 1;
+    }
+}
+
+// Where `selected` moves to for `key` in a list of `count` choices: up and down
+// step through them, wrapping round at either end, and home and end jump to
+// the first and last. Any other key leaves it where it is.
+//
+// Left and right are not included, so a program with tabs across the top can
+// give those to the tabs. `ui_tabs_move` is the same thing for them.
+fn ui_menu_move(selected: byte, key: byte, count: byte) -> byte {
+    if count == 0 {
+        return 0;
+    }
+    if key == KEY_UP {
+        if selected == 0 {
+            return count - 1;
+        }
+        return selected - 1;
+    }
+    if key == KEY_DOWN {
+        if selected + 1 >= count {
+            return 0;
+        }
+        return selected + 1;
+    }
+    if key == KEY_HOME {
+        return 0;
+    }
+    if key == KEY_END {
+        return count - 1;
+    }
+    return selected;
+}
+
+// `ui_menu_move` for a row of tabs: left and right, wrapping round.
+fn ui_tabs_move(selected: byte, key: byte, count: byte) -> byte {
+    if count == 0 {
+        return 0;
+    }
+    if key == KEY_LEFT {
+        if selected == 0 {
+            return count - 1;
+        }
+        return selected - 1;
+    }
+    if key == KEY_RIGHT {
+        if selected + 1 >= count {
+            return 0;
+        }
+        return selected + 1;
+    }
+    return selected;
+}
+
+// --------------------------------------------------------------------------
+// TEXT FIELDS
+// --------------------------------------------------------------------------
+
+// A one-line text field showing the string in `buffer`, `width` cells wide and
+// underlined. With the focus, a reversed cell shows where typing goes. Text
+// longer than the field shows its end, which is the part being typed.
+fn ui_field(column: byte, row: byte, width: byte, buffer: byte[], focused: bool) {
+    let length = str_len(buffer);
+    let start: byte = 0;
+    // Keep one cell free for the cursor.
+    if length >= width {
+        start = length - width + 1;
+    }
+
+    at(column, row);
+    ui_underline();
+    let i = start;
+    while i != length {
+        putc(buffer[i]);
+        i += 1;
+    }
+    let used = length - start;
+    if focused {
+        ui_reverse();
+        putc(' ');
+        print("\e[27m");
+        used += 1;
+    }
+    ui_repeat(' ', width - used);
+    print("\e[24m");
+}
+
+// Apply `key` to the string in `buffer`: a printable character goes on the end
+// if there is room for it, and backspace takes the last one off. Answers
+// whether the text changed, so a program can tell a keystroke the field used
+// from one meant for something else.
+fn ui_edit(buffer: byte[], key: byte) -> bool {
+    let length = str_len(buffer);
+    if key == KEY_BACKSPACE {
+        if length == 0 {
+            return false;
+        }
+        buffer[length - 1] = 0;
+        return true;
+    }
+    if key < ' ' || key > '~' {
+        return false;
+    }
+    // The last cell is kept for the 0 that ends the string.
+    if length as int + 1 >= len(buffer) {
+        return false;
+    }
+    buffer[length] = key;
+    buffer[length + 1] = 0;
+    return true;
+}

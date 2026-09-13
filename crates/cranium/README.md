@@ -223,6 +223,69 @@ whole frame takes about 18 ms.
 At 740K Brainfuck commands it is one of the larger examples here, and most of
 the half second it takes to start is `hypothalamus` compiling that.
 
+## Text interfaces
+
+[`std/tui.cra`](std/tui.cra) is the other way to put something on a terminal:
+windows, tabs, menus, checkboxes, radio buttons, progress bars and text fields,
+in the terminal's own 16 colours, and the keys to drive them.
+
+```rust
+import "std/tui.cra";
+
+fn main() {
+    ui_begin();
+    ui_fg(CYAN);
+    ui_window(2, 1, 30, 7, "Hello", BORDER_ROUNDED);
+    ui_fg(DEFAULT_COLOR);
+    ui_label(3, 4, 28, "Press any key", ALIGN_CENTER);
+    let key = ui_key();
+    ui_end();
+}
+```
+
+[`settings.cra`](examples/settings.cra) puts all of it on one screen:
+
+```
+  ╭─────────────── Cranium settings ───────────────╮
+  │  Profile   Sound   About                       │
+  ├────────────────────────────────────────────────┤
+  │                                                │
+  │  Name         Grace                            │
+  │                                                │
+  │  Theme         Ocean                           │
+  │                Forest                          │
+  │                Ember                           │
+  │                                                │
+  │  [ ] Notifications                             │
+  │  [ ] Dark background                           │
+  │                            [ Save ]  [ Quit ]  │
+  │                                                │
+  ╰────────────────────────────────────────────────╯
+```
+
+```bash
+stty -icanon -echo
+cranium settings.cra --run
+stty sane
+```
+
+A program draws the whole screen, waits for `ui_key`, changes its state, and
+draws again. `ui_key` reads the several bytes an arrow key arrives as and
+answers one `KEY_UP`, so a program never sees an escape sequence. The `stty`
+is what makes keys arrive as they are pressed rather than a line at a time,
+and like the one for [animation](#animation-and-input) it is the terminal's
+setting, not something a program can ask for. Redrawing everything on every
+key sounds wasteful and is not: the example does it in about 0.1 ms once
+`hypothalamus` has compiled it.
+
+A widget library is exactly what inlining makes expensive, since every call
+site gets its own copy. Two things in the compiler keep it affordable. String
+literals can be passed where a `byte[]` is expected, so text goes straight into
+the call. And a constant argument is known inside the function, so a style
+passed as a constant keeps only the code for that style: `ui_box(..., BORDER_DOUBLE)`
+is 25K Brainfuck commands, where the same box with its style read at run time
+is 67K.
+
 ## The language
 
 ### Types
@@ -317,6 +380,7 @@ shadow it — so an import means the same thing wherever the program is compiled
 | [`term.cra`](std/term.cra) | The cursor, the screen, and 24-bit colour |
 | [`random.cra`](std/random.cra) | A linear congruential generator |
 | [`gfx.cra`](std/gfx.cra) | Pixel graphics, on top of `term.cra` |
+| [`tui.cra`](std/tui.cra) | Windows, menus, buttons, text fields and keys, on top of `term.cra` |
 
 Two things follow from how Cranium compiles, and both are worth knowing before
 reaching for any of it.
