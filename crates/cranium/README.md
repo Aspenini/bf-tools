@@ -142,8 +142,8 @@ fn main() {
 ```
 
 That is [`truecolor.cra`](examples/truecolor.cra) in full. No window, no
-driver, no runtime, and nothing added to the language: 64x32 pixels out of 53K
-Brainfuck commands and 73 tape cells, at about 7 ms a frame.
+driver, no runtime, and nothing added to the language: 64x32 pixels out of 49K
+Brainfuck commands and 72 tape cells, at about 5 ms a frame.
 
 **There is no framebuffer, on purpose.** An array indexed at run time costs
 roughly `i²` steps to reach element `i`, and it shows:
@@ -151,12 +151,12 @@ roughly `i²` steps to reach element `i`, and it shows:
 | Pixels held in an array | One full sweep |
 | --- | --- |
 | 512 | 22 ms |
-| 1024 | 95 ms |
-| 2048 | 405 ms |
+| 1024 | 94 ms |
+| 2048 | 420 ms |
 
 A 64x32 buffer is 2048 pixels, so `plot(x, y)` into one would cap out near two
 frames a second. Walking the screen and asking for each pixel as it is emitted
-costs 7 ms instead, which is why `present` calls `shade` rather than the other
+costs 5 ms instead, which is why `present` calls `shade` rather than the other
 way round.
 
 That inversion needs a function pointer, which a Brainfuck tape has no way to
@@ -185,7 +185,7 @@ alone at end of input, so with `min 0 time 0` set, "nobody pressed anything"
 arrives as `0` and the loop keeps running.
 
 [`bounce.cra`](examples/bounce.cra) is the two together — a ball bouncing
-around a drifting background, steered with `wasd`, at about 5 ms a frame:
+around a drifting background, steered with `wasd`, at about 3 ms a frame:
 
 ```bash
 stty -icanon -echo min 0 time 0
@@ -218,7 +218,7 @@ It is also where the scan-order design earns itself. A ray belongs to a
 *column*, not a pixel, so casting one per `shade` call would mean 2048 casts a
 frame instead of 64. Instead `cast_scene` runs first and leaves one entry per
 column behind, and `shade` only looks up the column its pixel landed in. A
-whole frame takes about 23 ms.
+whole frame takes about 18 ms.
 
 At 740K Brainfuck commands it is one of the larger examples here, and most of
 the half second it takes to start is `hypothalamus` compiling that.
@@ -503,11 +503,29 @@ the length of the array it passes, and the parameter is bound to that array:
 program is compiled. Only a parameter can be written this way; anything else
 has to say how many cells to reserve.
 
+A string literal can be passed as well, as in `show("hello")`. It gets an
+array of its own for the length of the call, so a function that writes into
+it changes nothing anyone else can see.
+
 The compiler also works out any condition whose value it already knows, and
-`len` is one of those. So `if len(values) < 255 { ... }` compiles to a flag
-rather than to 16-bit arithmetic, which is what lets [`std/string.cra`](std/string.cra)
+`len` is one of those. So `if len(values) < 255 { ... }` compiles to no test at
+all, just the branch that runs, which is what lets [`std/string.cra`](std/string.cra)
 clamp every string to 255 characters for the price of a few commands. The
-branch that cannot run is still compiled, so a mistake in it is still an error.
+branch that cannot run is still compiled, so a mistake in it is still an error,
+but none of its code is kept.
+
+A constant argument is known inside the function it is passed to, as long as
+the function never assigns to that parameter. That is what lets a library take
+a style as an argument without every call paying for every style:
+
+```rust
+fn rule(style: byte) {
+    if style == DOUBLE { print("===="); } else { print("----"); }
+}
+```
+
+`rule(DOUBLE)` compiles to one `print`. Passed a variable, it compiles both and
+picks between them at run time.
 
 ## Compiling to a native binary
 

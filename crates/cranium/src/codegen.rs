@@ -127,6 +127,11 @@ struct Scope {
     /// True for the scope a function body starts with, which hides the
     /// caller's locals.
     barrier: bool,
+    /// Parameters whose value is known at compile time: the argument folded
+    /// to a constant and the function never assigns the parameter. Each is
+    /// kept with the address it was bound at, so a later `let` of the same
+    /// name in this scope is not mistaken for it.
+    known: HashMap<String, (Addr, i64)>,
 }
 
 /// An evaluated expression. The cells are readable but must not be written to;
@@ -174,6 +179,38 @@ struct Compiler<'a> {
     /// The calls currently being lowered: name, output length on entry, and
     /// how much of that has since been charged to calls made inside it.
     cost_stack: Vec<(String, usize, usize)>,
+}
+
+/// Whether `body` might store into the variable called `name`.
+///
+/// Deliberately blunt: any assignment to that name counts, even one aimed at a
+/// `let` that shadows it, and so does a `for` loop using it as its counter.
+/// Being wrong in that direction only costs a fold that could have happened.
+fn may_assign(body: &[Stmt], name: &str) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Stmt::Assign { target, .. } => {
+            matches!(target, Expr::Name { name: target, .. } if target == name)
+        }
+        Stmt::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            may_assign(then_block, name)
+                || else_block
+                    .as_deref()
+                    .is_some_and(|block| may_assign(block, name))
+        }
+        Stmt::While { body, .. } | Stmt::Loop { body, .. } | Stmt::Block { body, .. } => {
+            may_assign(body, name)
+        }
+        Stmt::For {
+            name: counter,
+            body,
+            ..
+        } => counter == name || may_assign(body, name),
+        _ => false,
+    })
 }
 
 /// Lower a parsed program to Brainfuck.
@@ -364,6 +401,21 @@ impl<'a> Compiler<'a> {
         None
     }
 
+    /// The compile-time value of `name`, if it is a parameter that has one.
+    fn known(&self, name: &str) -> Option<i64> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(binding) = scope.names.get(name) {
+                let (addr, value) = scope.known.get(name)?;
+                return (*addr == binding.addr).then_some(*value);
+            }
+            // Globals are never known: anything can assign them.
+            if scope.barrier {
+                return None;
+            }
+        }
+        None
+    }
+
     fn bind(&mut self, name: &str, binding: Binding) {
         self.scopes
             .last_mut()
@@ -376,6 +428,7 @@ impl<'a> Compiler<'a> {
         self.scopes.push(Scope {
             names: HashMap::new(),
             barrier,
+            known: HashMap::new(),
         });
     }
 
@@ -596,10 +649,13 @@ impl<'a> Compiler<'a> {
             Expr::Int { value, .. } if *value <= Type::Int.max_value() as u64 => *value as i64,
             Expr::Bool { value, .. } => i64::from(*value),
             Expr::Name { name, .. } => {
+                // A variable hides a constant of the same name, and is itself
+                // only known when it is a parameter given a constant.
                 if self.lookup(name).is_some() {
-                    return None;
+                    self.known(name)?
+                } else {
+                    self.constants.get(name)?.1
                 }
-                self.constants.get(name)?.1
             }
             Expr::Call { name, .. } if name == "len" => self.const_eval(expr).ok()?,
             Expr::Unary { op, operand, .. } => {
@@ -951,19 +1007,30 @@ impl<'a> Compiler<'a> {
         then_block: &'a [Stmt],
         else_block: Option<&'a [Stmt]>,
     ) -> CResult<()> {
+        // A condition known now needs no test at all: one branch simply runs.
+        // The other is still compiled, so a mistake in it is still an error
+        // rather than something folding quietly hides, but nothing it emitted
+        // is kept.
+        if let Some(value) = self.fold(cond) {
+            let (live, dead) = if value != 0 {
+                (Some(then_block), else_block)
+            } else {
+                (else_block, Some(then_block))
+            };
+            if let Some(body) = dead {
+                self.check_only(|this| this.block(body))?;
+            }
+            if let Some(body) = live {
+                self.block(body)?;
+            }
+            return Ok(());
+        }
+
         let taken = self.bf.alloc_zeroed(1);
         let skipped = self.bf.alloc_zeroed(1);
         let mark = self.bf.watermark();
-        // A condition known now is just a flag. Both branches are still
-        // compiled below, so a mistake in the one that cannot run is still an
-        // error rather than something folding quietly hides.
-        match self.fold(cond) {
-            Some(value) => self.bf.set(taken, u8::from(value != 0)),
-            None => {
-                let evaluated = self.eval(cond)?;
-                self.truthy(&evaluated, taken, cond.span())?;
-            }
-        }
+        let evaluated = self.eval(cond)?;
+        self.truthy(&evaluated, taken, cond.span())?;
         self.bf.release_to(mark);
         self.bf.set(skipped, 1);
 
@@ -980,6 +1047,23 @@ impl<'a> Compiler<'a> {
         self.bf.zero(skipped);
         self.bf.close_loop(skipped);
         Ok(())
+    }
+
+    /// Compile `body` for its errors alone, then take back everything it
+    /// emitted and every cost it recorded.
+    ///
+    /// Scopes, loop depth and the rest of the compiler's state are already
+    /// restored by the time a block finishes compiling, so the Brainfuck and
+    /// the cost report are all there is to undo.
+    fn check_only(&mut self, body: impl FnOnce(&mut Self) -> CResult<()>) -> CResult<()> {
+        let checkpoint = self.bf.checkpoint();
+        let costs = self.costs.clone();
+        let cost_stack = self.cost_stack.clone();
+        let result = body(self);
+        self.bf.rollback(checkpoint);
+        self.costs = costs;
+        self.cost_stack = cost_stack;
+        result
     }
 
     /// Evaluate a loop condition, folding in "and nothing has interrupted us".
@@ -1721,9 +1805,26 @@ impl<'a> Compiler<'a> {
         let mut scope = Scope {
             names: HashMap::new(),
             barrier: true,
+            known: HashMap::new(),
         };
         for (param, arg) in function.params.iter().zip(args) {
             let binding = self.bind_argument(param, arg)?;
+            // A constant passed to a parameter the function never changes is as
+            // good as a constant inside it. That is what lets a library take a
+            // style or a flag as an argument and have a call with a constant
+            // keep only the code for that choice.
+            if param.ty.is_scalar() && !may_assign(&function.body, &param.name) {
+                if let Some(value) = self.fold(arg) {
+                    let value = if matches!(param.ty, Type::Bool) {
+                        i64::from(value != 0)
+                    } else {
+                        reinterpret(value, &param.ty)
+                    };
+                    scope
+                        .known
+                        .insert(param.name.clone(), (binding.addr, value));
+                }
+            }
             scope.names.insert(param.name.clone(), binding);
         }
 
@@ -1752,6 +1853,9 @@ impl<'a> Compiler<'a> {
 
     fn bind_argument(&mut self, param: &Param, arg: &'a Expr) -> CResult<Binding> {
         if let Type::Array { .. } | Type::Slice { .. } = &param.ty {
+            if let Expr::Str { value, span } = arg {
+                return self.bind_string_literal(param, value, *span);
+            }
             // Arrays are passed by reference: the callee shares the caller's
             // cells rather than copying a whole region.
             let Expr::Name { name, span } = arg else {
@@ -1785,6 +1889,60 @@ impl<'a> Compiler<'a> {
         Ok(Binding {
             addr,
             ty: param.ty.clone(),
+        })
+    }
+
+    /// Pass a string literal where a `byte` array is expected.
+    ///
+    /// The literal gets an array of its own, from the array allocator, inside
+    /// the watermark [`Self::inline_call`] takes before binding arguments - so
+    /// the region is handed back when the call returns, like every other cell
+    /// the call used, and a later call reuses it. A callee that writes into the
+    /// array writes into that copy, which nothing else can see.
+    fn bind_string_literal(&mut self, param: &Param, value: &[u8], span: Span) -> CResult<Binding> {
+        let needed = value.len() + 1;
+        let length = match &param.ty {
+            Type::Slice { element } if matches!(**element, Type::Byte) => needed,
+            Type::Array { element, length } if matches!(**element, Type::Byte) => {
+                if needed > *length {
+                    return error(
+                        span,
+                        format!(
+                            "string needs {needed} elements including the terminator, but `{}` holds {length}",
+                            param.name
+                        ),
+                    );
+                }
+                *length
+            }
+            other => {
+                return error(
+                    span,
+                    format!(
+                        "a string is a `byte` array, but `{}` is `{other}`",
+                        param.name
+                    ),
+                );
+            }
+        };
+
+        let layout = ArrayLayout::new(length, 1);
+        let region = self.bf.alloc_array(layout.region_cells());
+        // A region handed back by an earlier call still holds what that call
+        // left in it.
+        for offset in 0..layout.region_cells() as Addr {
+            self.bf.zero(region + offset);
+        }
+        let base = region + layout.base_offset();
+        for (index, &byte) in value.iter().enumerate() {
+            self.bf.set(layout.element(base, index), byte);
+        }
+        Ok(Binding {
+            addr: base,
+            ty: Type::Array {
+                element: Box::new(Type::Byte),
+                length,
+            },
         })
     }
 

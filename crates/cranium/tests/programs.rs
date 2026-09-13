@@ -1246,7 +1246,7 @@ fn a_function_called_twice_costs_twice() {
 fn printing_a_number_costs_far_more_than_printing_a_string() {
     // The README says so; this is the number behind it.
     let compiled =
-        compile_str("fn main() {\n    print(\"hello\");\n    let n: byte = 7;\n    print(n);\n}\n")
+        compile_str("fn main() {\n    print(\"hello\");\n    let n: int = 7;\n    print(n);\n}\n")
             .expect("compiles");
 
     let print = cost_of(&compiled, "print");
@@ -1703,4 +1703,118 @@ fn std_string_caps_a_line_at_255_characters_whatever_the_buffer() {
     );
 
     assert_eq!(out, "255");
+}
+
+// ---- passing strings, and what a constant argument lets the compiler drop -----
+
+#[test]
+fn a_string_literal_can_be_passed_as_an_array() {
+    let output = run(r#"
+fn show(s: byte[]) {
+    puts(s);
+    putc(' ');
+    print(len(s));
+    putc('\n');
+}
+
+fn shout(s: byte[16]) {
+    s[0] = s[0] - 32;
+    puts(s);
+    putc('\n');
+}
+
+fn main() {
+    show("hello");
+    show("");
+    // Each literal is a fresh copy, so writing into one changes nothing the
+    // next call sees, even though it reuses the same cells.
+    shout("quiet");
+    shout("again");
+    let kept: byte[8] = "same";
+    show(kept);
+}
+"#);
+    assert_eq!(output, "hello 6\n 1\nQuiet\nAgain\nsame 8\n");
+}
+
+#[test]
+fn a_string_literal_must_fit_the_array_it_is_passed_as() {
+    let err = error_of("fn f(s: byte[4]) { puts(s); }\nfn main() { f(\"toolong\"); }\n");
+    assert!(err.contains("string needs 8 elements"), "{err}");
+
+    let err = error_of("fn f(s: int[]) { }\nfn main() { f(\"no\"); }\n");
+    assert!(err.contains("a string is a `byte` array"), "{err}");
+}
+
+/// A function branching on a parameter, called with `arg`.
+fn picker(arg: &str) -> String {
+    format!(
+        "fn pick(style: byte) {{\n    if style == 0 {{\n        print(\"zero\");\n    }} else if style < 5 {{\n        print(\"small\");\n    }} else {{\n        print(\"large\");\n    }}\n}}\nfn main() {{\n    let input: byte = getc();\n    pick({arg});\n}}\n"
+    )
+}
+
+#[test]
+fn a_constant_argument_keeps_only_the_branch_it_chooses() {
+    assert_eq!(run(&picker("0")), "zero");
+    assert_eq!(run(&picker("3")), "small");
+    assert_eq!(run(&picker("9")), "large");
+    assert_eq!(run_with(&picker("input"), b"\x07"), "large");
+    assert_eq!(run_with(&picker("input"), b"\x02"), "small");
+
+    let constant = compile_str(&picker("3")).expect("compiles").code.len();
+    let variable = compile_str(&picker("input")).expect("compiles").code.len();
+    assert!(
+        constant * 3 < variable,
+        "constant {constant} commands, variable {variable}"
+    );
+}
+
+#[test]
+fn a_parameter_the_function_changes_is_not_treated_as_constant() {
+    let output = run(r#"
+fn count(n: byte) {
+    while n != 0 {
+        if n == 2 {
+            print("two ");
+        }
+        n -= 1;
+    }
+    if n == 0 {
+        print("done");
+    }
+}
+
+fn shadow(n: byte) {
+    let n: byte = 9;
+    if n == 9 {
+        print(" shadowed");
+    }
+}
+
+fn main() {
+    count(3);
+    shadow(1);
+}
+"#);
+    assert_eq!(output, "two done shadowed");
+}
+
+#[test]
+fn a_branch_that_cannot_run_costs_nothing_and_is_not_reported() {
+    let with_dead_branch = compile_str(
+        "fn heavy(v: byte) { print(v); }\nfn main() { let v: byte = getc(); if 1 > 2 { heavy(v); } putc('!'); }\n",
+    )
+    .expect("compiles");
+    let without =
+        compile_str("fn main() { let v: byte = getc(); putc('!'); }\n").expect("compiles");
+
+    assert_eq!(with_dead_branch.code, without.code);
+    assert!(
+        with_dead_branch
+            .costs
+            .iter()
+            .all(|cost| cost.name != "heavy"),
+        "{:?}",
+        with_dead_branch.costs
+    );
 }

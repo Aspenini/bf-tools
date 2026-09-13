@@ -22,6 +22,14 @@ pub struct Mark {
     array: Addr,
 }
 
+/// A point in the output to return to; see [`Bf::checkpoint`].
+#[derive(Debug, Clone, Copy)]
+pub struct Checkpoint {
+    len: usize,
+    pos: Addr,
+    mark: Mark,
+}
+
 /// Emits Brainfuck while tracking the data pointer.
 ///
 /// Two bump allocators share the tape. Scalars and temporaries come from the
@@ -137,6 +145,25 @@ impl Bf {
             scalar: self.next_free,
             array: self.array_next,
         }
+    }
+
+    /// Everything [`Bf::rollback`] needs to undo what is emitted after this.
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            len: self.out.len(),
+            pos: self.pos,
+            mark: self.watermark(),
+        }
+    }
+
+    /// Discard everything emitted since `checkpoint`, as if it never was.
+    ///
+    /// The peaks are left alone: they only ever say how much tape the program
+    /// might need, and overstating that is harmless.
+    pub fn rollback(&mut self, checkpoint: Checkpoint) {
+        self.out.truncate(checkpoint.len);
+        self.pos = checkpoint.pos;
+        self.release_to(checkpoint.mark);
     }
 
     /// Reset both allocators to a previous [`Bf::watermark`].

@@ -765,6 +765,10 @@ impl Bf {
     /// Write the number at `addr` to standard output in decimal, without
     /// leading zeros.
     pub fn num_print_decimal(&mut self, addr: Addr, width: usize) {
+        if width == 1 {
+            self.byte_print_decimal(addr);
+            return;
+        }
         self.scope(|bf| {
             let value = bf.alloc_zeroed(width);
             let place = bf.alloc_zeroed(width);
@@ -809,6 +813,69 @@ impl Bf {
             bf.zero(started);
             bf.num_zero(place, width);
             bf.num_zero(value, width);
+        });
+    }
+
+    /// [`Bf::num_print_decimal`] for a single byte.
+    ///
+    /// The general routine subtracts powers of ten, comparing before every
+    /// subtraction. A byte is small enough to simply count: a copy of it
+    /// counts down to zero while the digits count up. Each of the two lower
+    /// digits is kept as "how many to go until 10", so the moment it carries
+    /// is the moment it reaches zero, and [`Bf::if_zero_in_place`] notices that
+    /// in a fixed number of steps. There is no comparison anywhere, which
+    /// makes this a fraction of the size, and at most 255 trips round the loop.
+    fn byte_print_decimal(&mut self, addr: Addr) {
+        self.scope(|bf| {
+            let count = bf.alloc_zeroed(1);
+            // Each brings the two zero cells its test needs.
+            let ones_to_go = bf.alloc_zeroed(3);
+            let tens_to_go = bf.alloc_zeroed(3);
+            let hundreds = bf.alloc_zeroed(1);
+            bf.add_copy(addr, count);
+            bf.set(ones_to_go, 10);
+            bf.set(tens_to_go, 10);
+
+            bf.loop_at(count, |bf| {
+                bf.add(count, -1);
+                bf.add(ones_to_go, -1);
+                bf.if_zero_in_place(ones_to_go, |bf| {
+                    bf.set(ones_to_go, 10);
+                    bf.add(tens_to_go, -1);
+                    bf.if_zero_in_place(tens_to_go, |bf| {
+                        bf.set(tens_to_go, 10);
+                        bf.add(hundreds, 1);
+                    });
+                });
+            });
+
+            let digit = bf.alloc_zeroed(1);
+            let started = bf.alloc_zeroed(1);
+            bf.if_nonzero(hundreds, |bf| {
+                bf.set(started, 1);
+                bf.add(hundreds, b'0' as i32);
+                bf.write(hundreds);
+                bf.add(hundreds, -(b'0' as i32));
+            });
+
+            // 10 minus "to go" is the digit, and emptying the counter into it
+            // leaves the counter at zero for free.
+            bf.set(digit, 10);
+            bf.move_sub(tens_to_go, &[digit]);
+            bf.if_nonzero(digit, |bf| bf.set(started, 1));
+            bf.if_nonzero(started, |bf| {
+                bf.add(digit, b'0' as i32);
+                bf.write(digit);
+            });
+
+            bf.set(digit, 10);
+            bf.move_sub(ones_to_go, &[digit]);
+            bf.add(digit, b'0' as i32);
+            bf.write(digit);
+
+            bf.zero(digit);
+            bf.zero(started);
+            bf.zero(hundreds);
         });
     }
 }
