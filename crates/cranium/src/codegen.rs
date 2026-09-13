@@ -504,10 +504,19 @@ impl<'a> Compiler<'a> {
         Ok(match expr {
             Expr::Int { value, .. } => *value as i64,
             Expr::Bool { value, .. } => i64::from(*value),
-            Expr::Name { name, span } => match self.constants.get(name) {
-                Some((_, value)) => *value,
-                None => return error(*span, format!("`{name}` is not a compile-time constant")),
-            },
+            Expr::Name { name, span } => {
+                // A variable of the same name hides the constant, exactly as it
+                // does in `type_of`, so it is not a value known now.
+                if self.lookup(name).is_some() {
+                    return error(*span, format!("`{name}` is not a compile-time constant"));
+                }
+                match self.constants.get(name) {
+                    Some((_, value)) => *value,
+                    None => {
+                        return error(*span, format!("`{name}` is not a compile-time constant"));
+                    }
+                }
+            }
             Expr::Unary { op, operand, .. } => {
                 let value = self.const_eval(operand)?;
                 match op {
@@ -549,9 +558,104 @@ impl<'a> Compiler<'a> {
                     BinOp::Shr => left.wrapping_shr(right as u32),
                 }
             }
+            // Every call is inlined, so even a `byte[]` parameter is bound to the
+            // caller's own array by now, and its length is simply known.
+            Expr::Call { name, args, span } if name == "len" => {
+                let [Expr::Name { name: array, .. }] = args.as_slice() else {
+                    return error(*span, "this is not a compile-time constant");
+                };
+                match self.lookup(array).map(|binding| &binding.ty) {
+                    Some(Type::Array { length, .. }) => *length as i64,
+                    _ => return error(*span, "this is not a compile-time constant"),
+                }
+            }
             other => {
                 return error(other.span(), "this is not a compile-time constant");
             }
+        })
+    }
+
+    /// The value `expr` will have at run time, if it can be known now.
+    ///
+    /// [`Self::const_eval`] does its arithmetic in `i64`, which is right for a
+    /// `const` declaration because the result is then range-checked. This does
+    /// not have that luxury: its answer is used as the program's answer, so
+    /// every step wraps to the type the running program computes it in.
+    /// `200 + 100` is a `byte` sum that wraps to 44 at run time, so
+    /// `200 + 100 > 250` must fold to false, not true.
+    ///
+    /// `None` means "work it out at run time" - including for anything that is
+    /// not well typed, so the ordinary path still reports those errors.
+    fn fold(&self, expr: &Expr) -> Option<i64> {
+        let ty = self.type_of(expr).ok()?;
+        if !ty.is_scalar() {
+            return None;
+        }
+        let value = match expr {
+            // A literal too big for `int` is an error at run time; leave it there.
+            Expr::Int { value, .. } if *value <= Type::Int.max_value() as u64 => *value as i64,
+            Expr::Bool { value, .. } => i64::from(*value),
+            Expr::Name { name, .. } => {
+                if self.lookup(name).is_some() {
+                    return None;
+                }
+                self.constants.get(name)?.1
+            }
+            Expr::Call { name, .. } if name == "len" => self.const_eval(expr).ok()?,
+            Expr::Unary { op, operand, .. } => {
+                let value = self.fold(operand)?;
+                match op {
+                    UnOp::Not => i64::from(value == 0),
+                    UnOp::Neg => -value,
+                }
+            }
+            Expr::Cast {
+                value, ty: target, ..
+            } => {
+                let value = self.fold(value)?;
+                match target {
+                    Type::Bool => i64::from(value != 0),
+                    // Wrapped to the target below, which is what `as` does.
+                    _ => value,
+                }
+            }
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let left = self.fold(lhs)?;
+                let right = self.fold(rhs)?;
+                match op {
+                    BinOp::Add => left.wrapping_add(right),
+                    BinOp::Sub => left.wrapping_sub(right),
+                    BinOp::Mul => left.wrapping_mul(right),
+                    // Whatever division by zero does, it does at run time.
+                    BinOp::Div | BinOp::Rem if right == 0 => return None,
+                    BinOp::Div => left.wrapping_div(right),
+                    BinOp::Rem => left.wrapping_rem(right),
+                    BinOp::Eq => i64::from(left == right),
+                    BinOp::Ne => i64::from(left != right),
+                    BinOp::Lt => i64::from(left < right),
+                    BinOp::Le => i64::from(left <= right),
+                    BinOp::Gt => i64::from(left > right),
+                    BinOp::Ge => i64::from(left >= right),
+                    BinOp::And => i64::from(left != 0 && right != 0),
+                    BinOp::Or => i64::from(left != 0 || right != 0),
+                    BinOp::BitAnd => left & right,
+                    BinOp::BitOr => left | right,
+                    BinOp::BitXor => left ^ right,
+                    // Negative amounts are an error at run time, and anything past
+                    // the width of an i64 would wrap differently here.
+                    BinOp::Shl | BinOp::Shr if !(0..64).contains(&right) => return None,
+                    BinOp::Shl => left.wrapping_shl(right as u32),
+                    // Arithmetic on an i64, which keeps a signed value's sign just
+                    // as the run-time shift does.
+                    BinOp::Shr => left.wrapping_shr(right as u32),
+                }
+            }
+            _ => return None,
+        };
+        Some(if matches!(ty, Type::Bool) {
+            i64::from(value != 0)
+        } else {
+            reinterpret(value, &ty)
         })
     }
 
@@ -850,8 +954,16 @@ impl<'a> Compiler<'a> {
         let taken = self.bf.alloc_zeroed(1);
         let skipped = self.bf.alloc_zeroed(1);
         let mark = self.bf.watermark();
-        let evaluated = self.eval(cond)?;
-        self.truthy(&evaluated, taken, cond.span())?;
+        // A condition known now is just a flag. Both branches are still
+        // compiled below, so a mistake in the one that cannot run is still an
+        // error rather than something folding quietly hides.
+        match self.fold(cond) {
+            Some(value) => self.bf.set(taken, u8::from(value != 0)),
+            None => {
+                let evaluated = self.eval(cond)?;
+                self.truthy(&evaluated, taken, cond.span())?;
+            }
+        }
         self.bf.release_to(mark);
         self.bf.set(skipped, 1);
 
@@ -1639,7 +1751,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn bind_argument(&mut self, param: &Param, arg: &'a Expr) -> CResult<Binding> {
-        if let Type::Array { .. } = &param.ty {
+        if let Type::Array { .. } | Type::Slice { .. } = &param.ty {
             // Arrays are passed by reference: the callee shares the caller's
             // cells rather than copying a whole region.
             let Expr::Name { name, span } = arg else {
@@ -1648,7 +1760,14 @@ impl<'a> Compiler<'a> {
             let Some(binding) = self.lookup(name).cloned() else {
                 return error(*span, format!("`{name}` is not defined"));
             };
-            if binding.ty != param.ty {
+            // A slice accepts an array of any length with the right element.
+            // The binding keeps the caller's concrete type, which is what lets
+            // `len` inside the function answer with the caller's length.
+            let fits = match (&param.ty, &binding.ty) {
+                (Type::Slice { element }, Type::Array { element: given, .. }) => element == given,
+                (expected, given) => expected == given,
+            };
+            if !fits {
                 return error(
                     *span,
                     format!(

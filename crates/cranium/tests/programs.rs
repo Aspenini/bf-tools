@@ -1463,3 +1463,234 @@ fn gfx_takes_its_terminal_control_from_term() {
 
     assert!(!compiled.code.is_empty());
 }
+
+// ---- arrays of any length --------------------------------------------------
+//
+// `byte[]` names an array without saying how long it is. Every call is inlined,
+// so each call site already knows, and the parameter is bound to the caller's
+// own array: no run-time cost, and `len` answers with the caller's length.
+
+#[test]
+fn a_slice_parameter_takes_arrays_of_any_length() {
+    let out = run(r#"
+fn total(values: byte[]) -> int {
+    let sum: int = 0;
+    let i: int = 0;
+    while i < len(values) {
+        sum += values[i];
+        i += 1;
+    }
+    return sum;
+}
+
+fn main() {
+    let small: byte[3] = [1, 2, 3];
+    let big: byte[5] = [10, 20, 30, 40, 50];
+    print(total(small)); putc(' '); print(total(big));
+}
+"#);
+
+    assert_eq!(out, "6 150");
+}
+
+#[test]
+fn len_inside_a_slice_function_is_the_callers_length() {
+    let out = run("fn size(values: byte[]) -> int { return len(values); }\n\
+         fn main() { let a: byte[3]; let b: byte[40]; print(size(a)); putc(' '); print(size(b)); }\n");
+
+    assert_eq!(out, "3 40");
+}
+
+#[test]
+fn a_slice_writes_through_to_the_callers_array() {
+    let out = run(r#"
+fn fill(buffer: byte[], value: byte) {
+    let i: int = 0;
+    while i < len(buffer) - 1 {
+        buffer[i] = value;
+        i += 1;
+    }
+    buffer[i] = 0;
+}
+
+fn main() {
+    let a: byte[4];
+    fill(a, 'x');
+    puts(a);
+}
+"#);
+
+    assert_eq!(out, "xxx");
+}
+
+#[test]
+fn a_slice_is_only_allowed_as_a_parameter() {
+    for source in [
+        "fn main() { let x: byte[]; }\n",
+        "let g: byte[];\nfn main() { }\n",
+        "fn f() -> byte[] { }\nfn main() { }\n",
+    ] {
+        let err = compile_str(source).expect_err("a slice outside a parameter should be rejected");
+        assert!(
+            err.message.contains("only be a function parameter"),
+            "{source}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_slice_still_checks_its_element_type() {
+    let err = compile_str("fn f(a: byte[]) { }\nfn main() { let w: int[4]; f(w); }\n")
+        .expect_err("an int array is not a byte slice");
+
+    assert!(
+        err.message.contains("`int[4]`") && err.message.contains("`byte[]`"),
+        "{err}"
+    );
+}
+
+// ---- values the compiler works out ------------------------------------------
+
+#[test]
+fn a_variable_hides_a_constant_of_the_same_name() {
+    // This used to read the constant. `let x: byte = K;` took a shortcut that
+    // looked only at constants, while `if K > 7` looked at the variable, so the
+    // same name meant different things in the same function.
+    for source in [
+        "const K = 5;\nfn main() { let K = 9; let x: byte = K; print(x); }\n",
+        "const K = 5;\nfn f(K: byte) { let x: byte = K; print(x); }\nfn main() { f(9); }\n",
+    ] {
+        assert_eq!(run(source), "9", "{source}");
+    }
+}
+
+#[test]
+fn folded_conditions_agree_with_the_running_program() {
+    // Each of these has one answer in ordinary arithmetic and another in the
+    // fixed-width arithmetic the program runs, so a fold that used the wrong
+    // one would quietly change what a program does. The expected string was
+    // produced by the compiler from before folding existed, which worked every
+    // one of these out at run time.
+    let out = run(r#"
+fn show(taken: bool) {
+    if taken { putc('1'); } else { putc('0'); }
+}
+
+fn main() {
+    if 200 + 100 > 250 { show(true); } else { show(false); }
+    if 255 + 1 == 0 { show(true); } else { show(false); }
+    if 10 - 20 > 200 { show(true); } else { show(false); }
+    if -128 - 1 > 0 { show(true); } else { show(false); }
+    if 300 * 300 > 60000 { show(true); } else { show(false); }
+    if (250 as sbyte) < 0 { show(true); } else { show(false); }
+    if -7 / 2 == -3 { show(true); } else { show(false); }
+    if -7 % 2 == -1 { show(true); } else { show(false); }
+    if 1 << 9 == 0 { show(true); } else { show(false); }
+    if -8 >> 1 == -4 { show(true); } else { show(false); }
+    if (0 - 1) as int == 65535 { show(true); } else { show(false); }
+    if 200 as bool { show(true); } else { show(false); }
+}
+"#);
+
+    assert_eq!(out, "011001111101");
+}
+
+#[test]
+fn a_condition_known_at_compile_time_costs_almost_nothing() {
+    // The same test, once on a length the compiler can see and once on the
+    // same value stored in a variable first, which it cannot fold.
+    let folded = compile_str(
+        "let arr: byte[81];\nfn main() { let n: byte = 0; if len(arr) - 1 < 255 { n = 1; } }\n",
+    )
+    .expect("compiles");
+    let computed = compile_str(
+        "let arr: byte[81];\nfn main() { let n: byte = 0; let size: int = len(arr); if size - 1 < 255 { n = 1; } }\n",
+    )
+    .expect("compiles");
+
+    assert!(
+        folded.code.len() * 4 < computed.code.len(),
+        "folded {} commands, computed {}",
+        folded.code.len(),
+        computed.code.len()
+    );
+}
+
+#[test]
+fn a_branch_that_cannot_run_is_still_checked() {
+    // Folding chooses a flag; it does not delete the branch. So a mistake in
+    // code that can never run is still an error, not something that vanishes.
+    let err = compile_str("fn main() { if 1 > 2 { let x = undefined_name; } }\n")
+        .expect_err("an error in a dead branch should still be reported");
+
+    assert!(err.message.contains("undefined_name"), "{err}");
+}
+
+// ---- std/string.cra ----------------------------------------------------------
+
+#[test]
+fn std_string_measures_compares_and_searches() {
+    let out = run(r#"
+import "std/string.cra";
+
+let cat4: byte[4] = "cat";
+let cat16: byte[16] = "cat";
+let dog: byte[8] = "dog";
+let full: byte[3] = [65, 66, 67];
+let sentence: byte[24] = "  42 apples";
+let small: byte[4];
+
+fn main() {
+    print(str_len(cat16)); print(str_len(full)); putc(' ');
+    print(str_eq(cat4, cat16)); print(str_eq(cat4, dog)); putc(' ');
+    print(starts_with(sentence, dog)); print(starts_with(cat16, cat4)); putc(' ');
+    print(str_find(sentence, 'a')); putc(' ');
+    print(str_find(cat4, 'z') == NOT_FOUND); putc(' ');
+    print(str_copy(small, sentence)); putc('['); puts(small); putc(']'); putc(' ');
+    print(parse_int(sentence)); putc(' '); print(parse_int(dog));
+}
+"#);
+
+    // An unterminated array measures its whole length; "cat" in a byte[4]
+    // equals "cat" in a byte[16]; a copy into byte[4] keeps 3 and a 0.
+    assert_eq!(out, "33 10 01 5 1 3[  4] 42 0");
+}
+
+#[test]
+fn std_string_read_line_drops_line_endings_and_keeps_to_the_buffer() {
+    let out = run_with(
+        r#"
+import "std/string.cra";
+
+let line: byte[6];
+
+fn main() {
+    let n = read_line(line);
+    print(n); putc('['); puts(line); putc(']'); print(input_ended); putc(' ');
+    let m = read_line(line);
+    print(m); putc('['); puts(line); putc(']'); print(input_ended); putc(' ');
+    let e = read_line(line);
+    print(e); putc('['); puts(line); putc(']'); print(input_ended);
+}
+"#,
+        b"abcdefghij\r\nxy",
+    );
+
+    // Too long for the buffer, so cut short and the rest of the line dropped;
+    // the carriage return is not kept; a last line with no newline still reads,
+    // and says input ended; then there is nothing left at all.
+    assert_eq!(out, "5[abcde]0 2[xy]1 0[]1");
+}
+
+#[test]
+fn std_string_caps_a_line_at_255_characters_whatever_the_buffer() {
+    let mut input = vec![b'x'; 300];
+    input.push(b'\n');
+
+    let out = run_with(
+        "import \"std/string.cra\";\nlet big: byte[1000];\nfn main() { print(read_line(big)); }\n",
+        &input,
+    );
+
+    assert_eq!(out, "255");
+}

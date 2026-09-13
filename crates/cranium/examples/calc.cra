@@ -11,25 +11,12 @@
 //
 // Arithmetic is unsigned 16-bit, so intermediate results stay in 0..65535.
 
-const LINE_MAX = 80;
+import "std/string.cra";
 
-let line: byte[80];
+// One longer than the longest line, for the 0 `read_line` ends it with.
+let line: byte[81];
 let length = 0;
 let pos = 0;
-
-fn read_line() {
-    length = 0;
-    loop {
-        let c = getc();
-        if c == 0 || c == '\n' {
-            break;
-        }
-        if length < LINE_MAX {
-            line[length] = c;
-            length += 1;
-        }
-    }
-}
 
 fn peek() -> byte {
     if pos >= length {
@@ -64,7 +51,7 @@ fn parse_number() -> int {
 }
 
 fn main() {
-    read_line();
+    length = read_line(line);
 
     let total: int = 0;
     let term = parse_number();

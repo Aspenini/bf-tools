@@ -1,0 +1,255 @@
+// Strings: `byte` arrays that end at their first 0, or at the end of the array.
+//
+//     import "std/string.cra";
+//
+// That is the rule `puts` already follows, so a string built here prints with
+// `puts` and a string literal like `let name: byte[16] = "cranium";` works here.
+//
+// Every function takes `byte[]`, an array of any length. Because every call is
+// inlined, each call site already knows the length of the array it passes, so
+// this costs nothing at run time - `len` inside a function answers with the
+// caller's length. Arrays go by reference, so a function that writes into its
+// argument writes into the caller's array.
+//
+// A string argument has to be a named array: `str_len(name)`, not
+// `str_len("literal")`.
+//
+// THE 255-CHARACTER LIMIT
+//
+// These look at no more than the first 255 characters of any string, and
+// `read_line` keeps no more than 255. Every index is a `byte` for that reason:
+// walking the tape with a 16-bit index costs about twice as much, which
+// measured at between 30% and 56% of each function's size.
+//
+// A longer array is fine. Each function works out how much of it to look at
+// from `len`, and because `len` is known when the program is compiled, that
+// arithmetic folds away to a constant instead of running.
+//
+// Reading `s[i]` walks the tape to element `i`, and a loop over a string does
+// that for every character, so these are for lines and words, not megabytes.
+
+import "text.cra";
+
+// What `str_find` returns when the character is not there. No string is
+// searched past index 254, so this is never also a real position.
+const NOT_FOUND = 255;
+
+// Set by `read_line` when input ran out rather than a line ending.
+//
+// A line can end at end of input and still have text in it, so check this
+// after handling the line, not instead of it.
+let input_ended: bool = false;
+
+// --------------------------------------------------------------------------
+// MEASURING AND COMPARING
+// --------------------------------------------------------------------------
+
+// Characters before the first 0, or the whole array if there is none.
+fn str_len(s: byte[]) -> byte {
+    let limit: byte = 255;
+    if len(s) < 255 {
+        limit = len(s) as byte;
+    }
+
+    let i: byte = 0;
+    while i < limit {
+        if s[i] == 0 {
+            break;
+        }
+        i += 1;
+    }
+    return i;
+}
+
+// Whether two strings hold the same characters.
+//
+// The arrays can be different sizes: running off the end of one counts as
+// reaching its terminator, so "cat" in a `byte[4]` equals "cat" in a `byte[16]`.
+fn str_eq(a: byte[], b: byte[]) -> bool {
+    let limit_a: byte = 255;
+    if len(a) < 255 {
+        limit_a = len(a) as byte;
+    }
+    let limit_b: byte = 255;
+    if len(b) < 255 {
+        limit_b = len(b) as byte;
+    }
+
+    let i: byte = 0;
+    loop {
+        let x: byte = 0;
+        if i < limit_a {
+            x = a[i];
+        }
+        let y: byte = 0;
+        if i < limit_b {
+            y = b[i];
+        }
+        if x != y {
+            return false;
+        }
+        if x == 0 {
+            return true;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+// Whether `s` begins with every character of `prefix`.
+fn starts_with(s: byte[], prefix: byte[]) -> bool {
+    let limit_s: byte = 255;
+    if len(s) < 255 {
+        limit_s = len(s) as byte;
+    }
+    let limit_prefix: byte = 255;
+    if len(prefix) < 255 {
+        limit_prefix = len(prefix) as byte;
+    }
+
+    let i: byte = 0;
+    loop {
+        let wanted: byte = 0;
+        if i < limit_prefix {
+            wanted = prefix[i];
+        }
+        if wanted == 0 {
+            return true;
+        }
+        let found: byte = 0;
+        if i < limit_s {
+            found = s[i];
+        }
+        if found != wanted {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+// The index of the first `wanted`, or `NOT_FOUND`.
+fn str_find(s: byte[], wanted: byte) -> byte {
+    let limit: byte = 255;
+    if len(s) < 255 {
+        limit = len(s) as byte;
+    }
+
+    let i: byte = 0;
+    while i < limit {
+        let c = s[i];
+        if c == 0 {
+            break;
+        }
+        if c == wanted {
+            return i;
+        }
+        i += 1;
+    }
+    return NOT_FOUND;
+}
+
+// --------------------------------------------------------------------------
+// BUILDING
+// --------------------------------------------------------------------------
+
+// Copy `src` into `dest`, returning how many characters were copied.
+//
+// Stops one short of `dest`'s end so there is always room for the terminating
+// 0: a string that does not fit is cut short rather than left unterminated.
+fn str_copy(dest: byte[], src: byte[]) -> byte {
+    let room: byte = 255;
+    if len(dest) - 1 < 255 {
+        room = (len(dest) - 1) as byte;
+    }
+    let available: byte = 255;
+    if len(src) < 255 {
+        available = len(src) as byte;
+    }
+
+    let i: byte = 0;
+    while i < room {
+        let c: byte = 0;
+        if i < available {
+            c = src[i];
+        }
+        if c == 0 {
+            break;
+        }
+        dest[i] = c;
+        i += 1;
+    }
+    dest[i] = 0;
+    return i;
+}
+
+// --------------------------------------------------------------------------
+// READING AND PARSING
+// --------------------------------------------------------------------------
+
+// Read one line of input into `buffer`, returning its length.
+//
+// The newline is not kept, and neither is a carriage return, so a line typed
+// on Windows reads the same as one typed anywhere else. A line longer than the
+// buffer, or than 255 characters, is cut short and the rest of it is thrown
+// away, so the next call starts on the next line rather than partway through
+// this one. The result is always terminated with a 0.
+//
+// End of input sets `input_ended`.
+fn read_line(buffer: byte[]) -> byte {
+    let limit: byte = 255;
+    if len(buffer) - 1 < 255 {
+        limit = (len(buffer) - 1) as byte;
+    }
+
+    let count: byte = 0;
+    input_ended = false;
+    loop {
+        let c = getc();
+        if c == 0 {
+            input_ended = true;
+            break;
+        }
+        if c == '\n' {
+            break;
+        }
+        if c != 13 {
+            if count < limit {
+                buffer[count] = c;
+                count += 1;
+            }
+        }
+    }
+    buffer[count] = 0;
+    return count;
+}
+
+// The number at the start of `s`, after any spaces.
+//
+// Reading stops at the first character that is not a digit, so "42 apples"
+// is 42 and "apples" is 0. Values past 65535 wrap, like any other `int`.
+fn parse_int(s: byte[]) -> int {
+    let limit: byte = 255;
+    if len(s) < 255 {
+        limit = len(s) as byte;
+    }
+
+    let i: byte = 0;
+    while i < limit {
+        if !is_space(s[i]) {
+            break;
+        }
+        i += 1;
+    }
+
+    let value: int = 0;
+    while i < limit {
+        let c = s[i];
+        if !is_digit(c) {
+            break;
+        }
+        value = value * 10 + (c - '0') as int;
+        i += 1;
+    }
+    return value;
+}

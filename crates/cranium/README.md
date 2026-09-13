@@ -220,8 +220,8 @@ frame instead of 64. Instead `cast_scene` runs first and leaves one entry per
 column behind, and `shade` only looks up the column its pixel landed in. Three
 small array reads per pixel cost about 13 ms; the whole frame is 22 ms.
 
-At 1.9M Brainfuck commands it is the largest example here, and most of the
-second it takes to start is `hypothalamus` compiling that.
+At 1.6M Brainfuck commands it is one of the larger examples here, and most of
+the second it takes to start is `hypothalamus` compiling that.
 
 ## The language
 
@@ -313,6 +313,7 @@ shadow it — so an import means the same thing wherever the program is compiled
 | --- | --- |
 | [`math.cra`](std/math.cra) | `min`, `max`, `clamp`, `abs`, `abs_diff`, `gcd`, `pow`, `isqrt` |
 | [`text.cra`](std/text.cra) | `is_digit`, `is_alpha`, `is_space`, `to_upper`, `to_lower`, `digit_value` |
+| [`string.cra`](std/string.cra) | `str_len`, `str_eq`, `str_find`, `str_copy`, `read_line`, `parse_int` |
 | [`term.cra`](std/term.cra) | The cursor, the screen, and 24-bit colour |
 | [`random.cra`](std/random.cra) | A linear congruential generator |
 | [`gfx.cra`](std/gfx.cra) | Pixel graphics, on top of `term.cra` |
@@ -478,6 +479,31 @@ pay nothing for it.
 
 Arrays passed to functions are passed by reference, so a callee writes through
 to the caller's array.
+
+A parameter can leave the length out — `byte[]` — and take an array of any
+size:
+
+```rust
+fn total(values: byte[]) -> int {
+    let sum: int = 0;
+    for i in 0..len(values) {
+        sum += values[i];
+    }
+    return sum;
+}
+```
+
+This costs nothing at run time. Every call is inlined, so each call site knows
+the length of the array it passes, and the parameter is bound to that array:
+`len(values)` inside the function is the caller's length, worked out when the
+program is compiled. Only a parameter can be written this way; anything else
+has to say how many cells to reserve.
+
+The compiler also works out any condition whose value it already knows, and
+`len` is one of those. So `if len(values) < 255 { ... }` compiles to a flag
+rather than to 16-bit arithmetic, which is what lets [`std/string.cra`](std/string.cra)
+clamp every string to 255 characters for the price of a few commands. The
+branch that cannot run is still compiled, so a mistake in it is still an error.
 
 ## Compiling to a native binary
 

@@ -196,7 +196,7 @@ impl Parser {
                 let param_span = self.span();
                 let param_name = self.expect_ident()?;
                 self.expect_punct(":")?;
-                let ty = self.ty()?;
+                let ty = self.ty_in(true)?;
                 params.push(Param {
                     name: param_name,
                     ty,
@@ -224,6 +224,15 @@ impl Parser {
     }
 
     fn ty(&mut self) -> PResult<Type> {
+        self.ty_in(false)
+    }
+
+    /// Parse a type, allowing `byte[]` only when `allow_slice` is set.
+    ///
+    /// A slice has no size, so it can only name something that already exists
+    /// somewhere else - which is exactly what an array argument is, and nothing
+    /// else in the language.
+    fn ty_in(&mut self, allow_slice: bool) -> PResult<Type> {
         let mut ty = match self.peek() {
             Tok::Ident(_) => match self.take_ident().as_str() {
                 "byte" => Type::Byte,
@@ -238,6 +247,21 @@ impl Parser {
 
         while self.at_punct("[") {
             self.advance();
+            if matches!(ty, Type::Array { .. } | Type::Slice { .. }) {
+                return self.error("nested array types are not supported");
+            }
+            if self.at_punct("]") {
+                if !allow_slice {
+                    return self.error(
+                        "an array without a length can only be a function parameter; anything else needs to know how many cells to reserve",
+                    );
+                }
+                self.advance();
+                ty = Type::Slice {
+                    element: Box::new(ty),
+                };
+                continue;
+            }
             let length = match self.peek() {
                 Tok::Int(value) => {
                     let value = *value;

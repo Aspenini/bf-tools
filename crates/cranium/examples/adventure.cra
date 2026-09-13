@@ -13,7 +13,6 @@
 // called from one place each - which also keeps the inliner from emitting the
 // same paragraph a dozen times.
 
-const LINE_MAX = 40;
 const ROOMS = 7;
 const ITEMS = 4;
 
@@ -37,7 +36,10 @@ const GATE = 7;
 
 // The line buffer is indexed once per keystroke, so it is declared first and
 // lands closest to the scalars.
-let line: byte[40];
+import "std/string.cra";
+
+// One longer than the longest command, for the 0 `read_line` ends it with.
+let line: byte[41];
 let length = 0;
 let ended = false;
 
@@ -145,28 +147,15 @@ fn describe() {
     }
 }
 
-fn read_line() {
-    length = 0;
-    ended = false;
-    loop {
-        let c = getc();
-        if c == 0 {
-            ended = true;
-            break;
-        }
-        if c == '\n' {
-            break;
-        }
-        if c != 13 {
-            // Fold to lower case so LOOK and look are one command.
-            if c >= 'A' && c <= 'Z' {
-                c += 32;
-            }
-            if length < LINE_MAX {
-                line[length] = c;
-                length += 1;
-            }
-        }
+// Read a command, folded to lower case so LOOK and look are one command.
+fn read_input() {
+    length = read_line(line);
+    ended = input_ended;
+
+    let i = 0;
+    while i < length {
+        line[i] = to_lower(line[i]);
+        i += 1;
     }
 }
 
@@ -323,7 +312,7 @@ fn main() {
 
     while playing {
         print("> ");
-        read_line();
+        read_input();
 
         if ended && length == 0 {
             println("");

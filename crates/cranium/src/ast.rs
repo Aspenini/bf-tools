@@ -23,6 +23,17 @@ pub enum Type {
         /// Number of elements.
         length: usize,
     },
+    /// An array of any length, written `byte[]`. Only a parameter may have it.
+    ///
+    /// Every call is inlined, so each call site already knows the length of
+    /// the array it passes, and the parameter is bound to that concrete
+    /// [`Type::Array`]. A slice therefore never reaches the tape and costs
+    /// nothing at run time: it is a way of writing one function for arrays of
+    /// every size, and `len` inside it answers with the caller's length.
+    Slice {
+        /// Element type.
+        element: Box<Type>,
+    },
     /// The type of an expression that produces no value.
     Unit,
 }
@@ -37,6 +48,8 @@ impl Type {
             Type::Byte | Type::Bool | Type::SByte => 1,
             Type::Int | Type::SInt => 2,
             Type::Array { element, length } => element.width() * length,
+            // Never stored: a slice parameter is bound to the caller's array.
+            Type::Slice { .. } => 0,
             Type::Unit => 0,
         }
     }
@@ -111,6 +124,7 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::Unit => write!(f, "()"),
             Type::Array { element, length } => write!(f, "{element}[{length}]"),
+            Type::Slice { element } => write!(f, "{element}[]"),
         }
     }
 }

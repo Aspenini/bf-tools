@@ -81,6 +81,7 @@ pub const STD: &[(&str, &str)] = &[
     ("std/gfx.cra", include_str!("../std/gfx.cra")),
     ("std/math.cra", include_str!("../std/math.cra")),
     ("std/random.cra", include_str!("../std/random.cra")),
+    ("std/string.cra", include_str!("../std/string.cra")),
     ("std/term.cra", include_str!("../std/term.cra")),
     ("std/text.cra", include_str!("../std/text.cra")),
 ];

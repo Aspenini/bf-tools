@@ -413,3 +413,38 @@ fn the_bundled_library_offers_its_own_completions() {
         assert!(text.contains(expected), "no completion for `{expected}`");
     }
 }
+
+#[test]
+fn a_parameter_of_any_array_length_is_not_an_error() {
+    // `byte[]` is only legal as a parameter, and an editor has to accept it
+    // there, or every program using `std/string.cra` would be underlined.
+    let mut server = Server::new();
+    let path = scratch("slice-parameter.cra");
+
+    let replies = server.handle(&did_open(
+        &path,
+        "fn total(values: byte[]) -> int {\n    return len(values);\n}\n\nfn main() {\n    let a: byte[3];\n    let n = total(a);\n}\n",
+    ));
+
+    let reported = diagnostics(&replies);
+    assert_eq!(reported.len(), 1, "{reported:?}");
+    assert!(reported[0].1.is_empty(), "{reported:?}");
+}
+
+#[test]
+fn an_array_without_a_length_outside_a_parameter_is_reported() {
+    let mut server = Server::new();
+    let path = scratch("slice-variable.cra");
+
+    let replies = server.handle(&did_open(&path, "fn main() {\n    let x: byte[];\n}\n"));
+
+    let reported = diagnostics(&replies);
+    assert_eq!(reported.len(), 1, "{reported:?}");
+    assert!(
+        reported[0]
+            .1
+            .iter()
+            .any(|message| message.contains("function parameter")),
+        "{reported:?}"
+    );
+}
