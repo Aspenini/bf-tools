@@ -78,9 +78,13 @@ impl fmt::Display for LoadError {
 /// to date. Every [`Loader`] gets this, because it is handled before the
 /// loader is asked.
 pub const STD: &[(&str, &str)] = &[
+    ("std/array.cra", include_str!("../std/array.cra")),
+    ("std/fmt.cra", include_str!("../std/fmt.cra")),
     ("std/gfx.cra", include_str!("../std/gfx.cra")),
+    ("std/image.cra", include_str!("../std/image.cra")),
     ("std/math.cra", include_str!("../std/math.cra")),
     ("std/random.cra", include_str!("../std/random.cra")),
+    ("std/sound.cra", include_str!("../std/sound.cra")),
     ("std/string.cra", include_str!("../std/string.cra")),
     ("std/term.cra", include_str!("../std/term.cra")),
     ("std/text.cra", include_str!("../std/text.cra")),

@@ -1,0 +1,38 @@
+// Ode to Joy, as a sound file.
+//
+//     cranium tune.cra --run > tune.wav
+//     cranium tune.cra --run | aplay
+//
+// (In PowerShell, `>` re-encodes the output as text and ruins the file; run
+// the redirect from cmd, or any Unix shell.)
+//
+// Every byte of the WAV file, header included, is written by the Brainfuck
+// this compiles to. std/sound.cra explains the format; this is the melody.
+
+import "std/sound.cra";
+
+// A note is NOTE_LENGTH samples of tone and then GAP samples of silence, so
+// that two notes of the same pitch in a row are heard as two.
+const NOTE_LENGTH = 1800;
+const GAP = 200;
+const NOTES = 15;
+
+// The first line of the tune.
+let melody: int[15] = [
+    NOTE_E4, NOTE_E4, NOTE_F4, NOTE_G4,
+    NOTE_G4, NOTE_F4, NOTE_E4, NOTE_D4,
+    NOTE_C4, NOTE_C4, NOTE_D4, NOTE_E4,
+    NOTE_E4, NOTE_D4, NOTE_D4
+];
+
+fn main() {
+    // The header has to know every sample before the first is written.
+    sound_begin(NOTES * (NOTE_LENGTH + GAP));
+
+    let i: byte = 0;
+    while i != NOTES {
+        sound_tone(melody[i], NOTE_LENGTH, 50, WAVE_TRIANGLE);
+        sound_rest(GAP);
+        i += 1;
+    }
+}

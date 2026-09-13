@@ -286,6 +286,26 @@ passed as a constant keeps only the code for that style: `ui_box(..., BORDER_DOU
 is 17K Brainfuck commands, where the same box with its style read at run time
 is 57K.
 
+## Pictures and sound
+
+A program's output is only bytes, and so is an image file or a sound file.
+[`std/image.cra`](std/image.cra) writes PPM pictures, asking the program for
+each pixel the way `gfx.cra` does, and [`std/sound.cra`](std/sound.cra) writes
+8-bit WAV files out of square, saw and triangle waves:
+
+```bash
+cranium sunset.cra --run > sunset.ppm
+cranium tune.cra --run > tune.wav
+```
+
+[`sunset.cra`](examples/sunset.cra) puts a sun on the horizon over the sea, and
+[`tune.cra`](examples/tune.cra) plays the first line of Ode to Joy. The file
+header, every pixel and every sample are written by the Brainfuck; nothing on
+the other end has to understand anything but a file.
+
+One caution on Windows: PowerShell's `>` re-encodes a program's output as text,
+which ruins a binary file. Run those redirects from cmd or a Unix shell.
+
 ## The language
 
 ### Types
@@ -377,10 +397,14 @@ shadow it — so an import means the same thing wherever the program is compiled
 | [`math.cra`](std/math.cra) | `min`, `max`, `clamp`, `abs`, `abs_diff`, `gcd`, `pow`, `isqrt` |
 | [`text.cra`](std/text.cra) | `is_digit`, `is_alpha`, `is_space`, `to_upper`, `to_lower`, `digit_value` |
 | [`string.cra`](std/string.cra) | `str_len`, `str_eq`, `str_find`, `str_copy`, `read_line`, `parse_int` |
+| [`array.cra`](std/array.cra) | `array_fill`, `array_copy`, `array_sum`, `array_find`, `array_count`, `array_sort`, `array_search_sorted` |
+| [`fmt.cra`](std/fmt.cra) | `print_hex`, `print_binary`, `print_padded`, `print_zero_padded` |
 | [`term.cra`](std/term.cra) | The cursor, the screen, and 24-bit colour |
 | [`random.cra`](std/random.cra) | A linear congruential generator |
 | [`gfx.cra`](std/gfx.cra) | Pixel graphics, on top of `term.cra` |
 | [`tui.cra`](std/tui.cra) | Windows, menus, buttons, text fields and keys, on top of `term.cra` |
+| [`image.cra`](std/image.cra) | PPM picture files, a pixel at a time |
+| [`sound.cra`](std/sound.cra) | 8-bit WAV sound files: notes, rests, and square, saw and triangle waves |
 
 Two things follow from how Cranium compiles, and both are worth knowing before
 reaching for any of it.
@@ -388,8 +412,9 @@ reaching for any of it.
 **An unused import costs nothing.** Functions are only emitted where they are
 called, so importing `math`, `text` and `term` and using none of them produces
 a byte-for-byte identical program. A module with a global is the exception —
-`random.cra` keeps its state in one, which costs the 168 commands that
-initialise it whether it is used or not.
+`random.cra` keeps its state in one, which costs the 152 commands that
+initialise it whether it is used or not, and `image.cra` keeps the colour
+`paint` answers with in three.
 
 **Everything is inlined, so nothing here is large.** A helper called from ten
 places emits its body ten times, which is why the whole library is comparisons

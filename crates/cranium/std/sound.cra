@@ -1,0 +1,139 @@
+// Sound as a file: 8-bit mono WAV, 8000 samples a second.
+//
+//     import "std/sound.cra";
+//
+// Like std/image.cra, this turns a program's output into something other
+// than text. Write the header, then the samples:
+//
+//     cranium tune.cra --run > tune.wav
+//     cranium tune.cra --run | aplay          # or play it straight away
+//
+// (In PowerShell, `>` re-encodes a program's output as text and ruins the
+// file. Run the redirect from cmd, or from any Unix shell, instead.)
+//
+//     import "std/sound.cra";
+//
+//     fn main() {
+//         sound_begin(4000);
+//         sound_tone(NOTE_A4, 4000, 60, WAVE_SQUARE);
+//     }
+//
+// A WAV file says in its header how many samples follow, so a program has to
+// know that before it writes the first one. Every function here takes a count
+// of samples, and the counts have to add up to what `sound_begin` was told:
+// fewer and a player waits for the rest, more and it ignores them.
+//
+// Counts are `int`s, so a file holds at most 65,499 samples, a little over
+// eight seconds.
+
+// Samples per second. 8000 is what a telephone uses, and it keeps every count
+// a program needs within an `int`.
+const SAMPLE_RATE = 8000;
+
+// 8-bit samples go from 0 to 255, with silence in the middle.
+const SILENCE = 128;
+
+// The shapes `sound_tone` can make. A square wave is the buzzy sound of old
+// computers and game consoles, a saw is brighter still, and a triangle is
+// softer, closer to a flute.
+const WAVE_SQUARE = 0;
+const WAVE_SAW = 1;
+const WAVE_TRIANGLE = 2;
+
+// How far through its cycle a note moves each sample, in 65536ths of a cycle:
+// 65536 * frequency / SAMPLE_RATE. Any other pitch works the same way.
+const NOTE_C4 = 2143;
+const NOTE_D4 = 2406;
+const NOTE_E4 = 2700;
+const NOTE_F4 = 2861;
+const NOTE_G4 = 3211;
+const NOTE_A4 = 3604;
+const NOTE_B4 = 4046;
+const NOTE_C5 = 4286;
+const NOTE_D5 = 4812;
+const NOTE_E5 = 5401;
+
+// --------------------------------------------------------------------------
+// THE HEADER
+// --------------------------------------------------------------------------
+
+// A number as two bytes, lowest first, which is how WAV stores everything.
+fn sound_u16(value: int) {
+    putc(value as byte);
+    putc((value >> 8) as byte);
+}
+
+// A number as four bytes, lowest first. Nothing here needs the top two.
+fn sound_u32(value: int) {
+    sound_u16(value);
+    putc(0);
+    putc(0);
+}
+
+// The 44 bytes every WAV file starts with, for `samples` samples to follow.
+fn sound_begin(samples: int) {
+    print("RIFF");
+    // The size of everything after these first eight bytes.
+    sound_u32(samples + 36);
+    print("WAVEfmt ");
+    // The format section is 16 bytes: plain PCM, one channel, the rate, the
+    // bytes per second and per sample, and 8 bits to a sample.
+    sound_u32(16);
+    sound_u16(1);
+    sound_u16(1);
+    sound_u32(SAMPLE_RATE);
+    sound_u32(SAMPLE_RATE);
+    sound_u16(1);
+    sound_u16(8);
+    print("data");
+    sound_u32(samples);
+}
+
+// --------------------------------------------------------------------------
+// SAMPLES
+// --------------------------------------------------------------------------
+
+// `count` samples of nothing.
+fn sound_rest(count: int) {
+    let left = count;
+    while left != 0 {
+        putc(SILENCE);
+        left -= 1;
+    }
+}
+
+// `count` samples of a note: `step` is how far each sample moves through the
+// cycle (one of the NOTE_ constants), `volume` how far the wave swings either
+// side of silence, from 0 to 127, and `wave` its shape.
+//
+// Pass the shape as a constant: only the code for that one is compiled then.
+fn sound_tone(step: int, count: int, volume: byte, wave: byte) {
+    let bottom = SILENCE - volume;
+    let phase: int = 0;
+    let left = count;
+    while left != 0 {
+        // Where in the cycle this sample falls, from 0 to 255.
+        let turn = (phase >> 8) as byte;
+        let sample = SILENCE;
+        if wave == WAVE_SQUARE {
+            if turn < 128 {
+                sample = SILENCE + volume;
+            } else {
+                sample = bottom;
+            }
+        } else if wave == WAVE_SAW {
+            // Rising from the bottom of the swing to the top.
+            sample = bottom + ((turn as int * volume as int) >> 7) as byte;
+        } else {
+            // Up for the first half of the cycle and down for the second.
+            let rise = turn;
+            if turn >= 128 {
+                rise = 255 - turn;
+            }
+            sample = bottom + ((rise as int * volume as int) >> 6) as byte;
+        }
+        putc(sample);
+        phase += step;
+        left -= 1;
+    }
+}

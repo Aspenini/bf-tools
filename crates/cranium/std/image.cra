@@ -1,0 +1,79 @@
+// Pictures as files.
+//
+//     import "std/image.cra";
+//
+// A program's output is only bytes, so a program whose bytes are an image
+// file is a program that draws a picture - no display, no library, and it runs
+// anywhere Brainfuck does:
+//
+//     cranium sunset.cra --run > sunset.ppm
+//
+// The format is PPM, a portable pixmap: a short line of text saying how big
+// the picture is, then three bytes for every pixel. Most image viewers open
+// it, and anything else converts it: `magick sunset.ppm sunset.png`.
+//
+// (In PowerShell, `>` re-encodes a program's output as text and ruins the
+// file. Run the redirect from cmd, or from any Unix shell, instead.)
+//
+// As in std/gfx.cra, the program supplies the picture by defining `paint`,
+// which this file calls for every pixel, and which answers with `image_rgb`:
+//
+//     import "std/image.cra";
+//
+//     fn paint(x: byte, y: byte) {
+//         image_rgb(x, y, 128);
+//     }
+//
+//     fn main() {
+//         image_render(256, 256);
+//     }
+//
+// Calling a `paint` this file never defines works because Cranium has one
+// namespace and inlines every call: the program's own `paint` is what it
+// resolves to, when the program is compiled.
+//
+// Pixels are written in the order they are asked for, so there is nothing
+// held in memory and a picture can be as large as the format allows: up to
+// 256 pixels a side here, since every coordinate is a byte.
+
+// The colour `paint` last answered with. Use `image_rgb` rather than these.
+let image_r: byte = 0;
+let image_g: byte = 0;
+let image_b: byte = 0;
+
+// The answer `paint` gives.
+fn image_rgb(r: byte, g: byte, b: byte) {
+    image_r = r;
+    image_g = g;
+    image_b = b;
+}
+
+// Write a whole picture, `width` by `height` pixels, calling `paint` for each
+// one: left to right, top to bottom. Both sizes run from 1 to 256.
+fn image_render(width: int, height: int) {
+    print("P6\n");
+    print(width);
+    putc(' ');
+    print(height);
+    print("\n255\n");
+
+    // Counting down from the size means a size of 256 needs no ninth bit;
+    // the coordinate handed to `paint` counts up alongside it and wraps to 0
+    // just as the count runs out.
+    let y: byte = 0;
+    let rows = height;
+    while rows != 0 {
+        let x: byte = 0;
+        let columns = width;
+        while columns != 0 {
+            paint(x, y);
+            putc(image_r);
+            putc(image_g);
+            putc(image_b);
+            x += 1;
+            columns -= 1;
+        }
+        y += 1;
+        rows -= 1;
+    }
+}

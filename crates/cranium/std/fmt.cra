@@ -1,0 +1,101 @@
+// Printing numbers in other shapes: hexadecimal, binary, and lined up in
+// columns.
+//
+//     import "std/fmt.cra";
+//
+// `print` already writes any number in decimal. These are for the times that
+// is not the shape wanted - a byte as `3F`, a flag register as `00101100`, or
+// a table whose numbers line up on the right.
+
+// --------------------------------------------------------------------------
+// HEXADECIMAL AND BINARY
+// --------------------------------------------------------------------------
+
+// One hexadecimal digit, for a value from 0 to 15.
+fn print_hex_digit(digit: byte) {
+    if digit < 10 {
+        putc('0' + digit);
+    } else {
+        putc('A' - 10 + digit);
+    }
+}
+
+// A byte as two hexadecimal digits: 63 is `3F`.
+fn print_hex(value: byte) {
+    let high = (value >> 4) as byte;
+    // `value - high * 16` is the low four bits without `&`, which splits the
+    // byte into bits and costs about twenty times as much.
+    print_hex_digit(high);
+    print_hex_digit(value - high * 16);
+}
+
+// An `int` as four hexadecimal digits: 1000 is `03E8`.
+fn print_hex_int(value: int) {
+    print_hex((value >> 8) as byte);
+    print_hex(value as byte);
+}
+
+// A byte as eight binary digits, the highest first: 44 is `00101100`.
+fn print_binary(value: byte) {
+    let rest = value;
+    let left: byte = 8;
+    while left != 0 {
+        if rest >= 128 {
+            putc('1');
+        } else {
+            putc('0');
+        }
+        // Doubling a byte drops its top bit off the end.
+        rest += rest;
+        left -= 1;
+    }
+}
+
+// --------------------------------------------------------------------------
+// COLUMNS
+// --------------------------------------------------------------------------
+
+// How many digits `print` writes for `value`.
+fn digit_count(value: int) -> byte {
+    if value < 10 {
+        return 1;
+    }
+    if value < 100 {
+        return 2;
+    }
+    if value < 1000 {
+        return 3;
+    }
+    if value < 10000 {
+        return 4;
+    }
+    return 5;
+}
+
+// `value` in decimal, with spaces in front to make it `width` characters wide,
+// so a column of them lines up on the right. A number wider than `width` is
+// printed whole, not cut.
+fn print_padded(value: int, width: byte) {
+    let digits = digit_count(value);
+    if digits < width {
+        let left = width - digits;
+        while left != 0 {
+            putc(' ');
+            left -= 1;
+        }
+    }
+    print(value);
+}
+
+// The same, with zeros in front instead: 7 at width 3 is `007`.
+fn print_zero_padded(value: int, width: byte) {
+    let digits = digit_count(value);
+    if digits < width {
+        let left = width - digits;
+        while left != 0 {
+            putc('0');
+            left -= 1;
+        }
+    }
+    print(value);
+}

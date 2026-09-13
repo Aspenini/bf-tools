@@ -2159,3 +2159,227 @@ fn settings_example_edits_saves_and_switches_tabs() {
     );
     assert!(sound.ends_with("Goodbye, Ada.\n"), "{sound:?}");
 }
+
+// ---- std/array.cra, std/fmt.cra, std/image.cra, std/sound.cra -----------------
+
+/// Compile `source`, run it on `input`, and return exactly the bytes it wrote,
+/// for programs whose output is a file rather than text.
+fn run_bytes(source: &str, input: &[u8]) -> Vec<u8> {
+    let compiled = match compile_str(source) {
+        Ok(output) => output,
+        Err(err) => panic!("failed to compile:\n{source}\n\n{err}"),
+    };
+    let tape = compiled.cells_used.max(30_000);
+    let mut runtime = create_runtime_with_tape(&compiled.code, CellSize::Bits8, tape)
+        .expect("cranium emits valid brainfuck");
+    let mut input = std::io::Cursor::new(input.to_vec());
+    let mut output = Vec::new();
+    runtime
+        .run_with_io(&mut input, &mut output)
+        .expect("program runs");
+    output
+}
+
+#[test]
+fn std_array_fills_copies_searches_and_sorts() {
+    let output = run(r#"
+import "std/array.cra";
+
+let data: byte[8] = [5, 3, 200, 3, 0, 255, 17, 3];
+let copy: byte[5];
+let backwards: byte[6] = [9, 8, 7, 7, 1, 0];
+let single: byte[1] = [4];
+
+fn show(values: byte[]) {
+    let i: byte = 0;
+    while i != len(values) as byte {
+        print(values[i]);
+        putc(' ');
+        i += 1;
+    }
+    putc('|');
+}
+
+fn main() {
+    print(array_sum(data));
+    putc(' ');
+    print(array_min(data));
+    putc(' ');
+    print(array_max(data));
+    putc(' ');
+    print(array_find(data, 3));
+    putc(' ');
+    print(array_find(data, 9) == NOT_FOUND);
+    putc(' ');
+    print(array_count(data, 3));
+    putc(' ');
+    // The copy stops at the shorter of the two.
+    print(array_copy(copy, data));
+    putc(' ');
+    show(copy);
+    array_reverse(copy);
+    show(copy);
+    array_sort(data);
+    show(data);
+    // With duplicates, the first of them.
+    print(array_search_sorted(data, 3));
+    putc(' ');
+    print(array_search_sorted(data, 255));
+    putc(' ');
+    print(array_search_sorted(data, 4) == NOT_FOUND);
+    putc(' ');
+    print(array_search_sorted(data, 0));
+    putc(' ');
+    array_fill(copy, 7);
+    show(copy);
+    array_swap(data, 0, 7);
+    show(data);
+    print(array_equal(data, data));
+    print(array_equal(copy, data));
+    array_sort(backwards);
+    show(backwards);
+    array_sort(single);
+    show(single);
+}
+"#);
+    assert_eq!(
+        output,
+        "486 0 255 1 1 3 5 5 3 200 3 0 |0 3 200 3 5 |0 3 3 3 5 17 200 255 |1 7 1 0 7 7 7 7 7 |255 3 3 3 5 17 200 0 |100 1 7 7 8 9 |4 |"
+    );
+}
+
+#[test]
+fn std_fmt_prints_hex_binary_and_columns() {
+    let output = run(r#"
+import "std/fmt.cra";
+
+fn main() {
+    print_hex(0);
+    putc(' ');
+    print_hex(63);
+    putc(' ');
+    print_hex(255);
+    putc(' ');
+    print_hex_int(1000);
+    putc(' ');
+    print_hex_int(65535);
+    putc(' ');
+    print_binary(44);
+    putc(' ');
+    print_binary(255);
+    putc(' ');
+    print_binary(0);
+    putc(' ');
+    putc('[');
+    print_padded(7, 3);
+    putc(']');
+    // Too wide for its column: printed whole rather than cut.
+    putc('[');
+    print_padded(12345, 3);
+    putc(']');
+    putc('[');
+    print_zero_padded(42, 5);
+    putc(']');
+    putc(' ');
+    print(digit_count(9));
+    print(digit_count(10));
+    print(digit_count(99));
+    print(digit_count(100));
+    print(digit_count(9999));
+    print(digit_count(10000));
+    print(digit_count(65535));
+}
+"#);
+    assert_eq!(
+        output,
+        "00 3F FF 03E8 FFFF 00101100 11111111 00000000 [  7][12345][00042] 1223455"
+    );
+}
+
+#[test]
+fn std_image_writes_a_ppm_one_pixel_at_a_time() {
+    let output = run_bytes(
+        r#"
+import "std/image.cra";
+
+fn paint(x: byte, y: byte) {
+    image_rgb(x * 100, y + 200, 7);
+}
+
+fn main() {
+    image_render(3, 2);
+}
+"#,
+        &[],
+    );
+    let mut expected = b"P6\n3 2\n255\n".to_vec();
+    for y in 0_u8..2 {
+        for x in 0_u8..3 {
+            expected.extend([x.wrapping_mul(100), y + 200, 7]);
+        }
+    }
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn std_sound_writes_a_wav_header_and_every_wave() {
+    let output = run_bytes(
+        r#"
+import "std/sound.cra";
+
+fn main() {
+    sound_begin(19);
+    // A step of 16384 is a quarter of a cycle, so each shape is sampled at
+    // four points.
+    sound_tone(16384, 8, 100, WAVE_SQUARE);
+    sound_tone(16384, 4, 100, WAVE_SAW);
+    sound_tone(16384, 4, 100, WAVE_TRIANGLE);
+    sound_rest(3);
+}
+"#,
+        &[],
+    );
+
+    let mut expected = b"RIFF".to_vec();
+    expected.extend(55_u32.to_le_bytes());
+    expected.extend(b"WAVEfmt ");
+    expected.extend(16_u32.to_le_bytes());
+    expected.extend(1_u16.to_le_bytes());
+    expected.extend(1_u16.to_le_bytes());
+    expected.extend(8000_u32.to_le_bytes());
+    expected.extend(8000_u32.to_le_bytes());
+    expected.extend(1_u16.to_le_bytes());
+    expected.extend(8_u16.to_le_bytes());
+    expected.extend(b"data");
+    expected.extend(19_u32.to_le_bytes());
+    assert_eq!(expected.len(), 44);
+    expected.extend([228, 228, 28, 28, 228, 228, 28, 28]);
+    expected.extend([28, 78, 128, 178]);
+    expected.extend([28, 128, 226, 126]);
+    expected.extend([128, 128, 128]);
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn std_modules_without_globals_cost_nothing_unused() {
+    let with = compile_str(
+        "import \"std/array.cra\";\nimport \"std/fmt.cra\";\nimport \"std/sound.cra\";\nfn main() { println(\"hi\"); }\n",
+    )
+    .expect("compiles");
+    let without = compile_str("fn main() { println(\"hi\"); }\n").expect("compiles");
+    assert_eq!(with.code, without.code);
+}
+
+/// The picture and the tune write tens of thousands of pixels and samples,
+/// which is too many to run here on an interpreter, so these check they
+/// compile - which is what would break if the libraries changed under them.
+#[test]
+fn picture_and_sound_examples_compile() {
+    for source in [
+        include_str!("../examples/sunset.cra"),
+        include_str!("../examples/tune.cra"),
+    ] {
+        let compiled = compile_str(source).expect("example should compile");
+        assert!(compiled.code.len() > 10_000, "suspiciously small");
+    }
+}

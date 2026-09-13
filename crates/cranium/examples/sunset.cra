@@ -1,0 +1,58 @@
+// A sunset over the sea, as a picture file.
+//
+//     cranium sunset.cra --run > sunset.ppm
+//
+// (In PowerShell, `>` re-encodes the output as text and ruins the file; run
+// the redirect from cmd, or any Unix shell.)
+//
+// std/image.cra writes the file and asks `paint` below for each pixel in
+// turn. Everything that decides a colour is here: a sky that warms towards the
+// horizon, a sun sitting on it, and the sea underneath with the sun's
+// reflection broken into ripples.
+
+import "std/image.cra";
+import "std/math.cra";
+
+const WIDTH = 256;
+const HEIGHT = 144;
+
+// The row the sea starts on, and where the sun's centre sits.
+const HORIZON = 100;
+const SUN_X = 128;
+const SUN_RADIUS = 40;
+
+fn paint(x: byte, y: byte) {
+    let dx = abs_diff(x, SUN_X);
+
+    if y < HORIZON {
+        let dy = HORIZON - y;
+        // Inside the circle when dx² + dy² is under the radius squared. The
+        // squares need an `int`, so the cheap byte tests go first and most of
+        // the sky never pays for them.
+        if dx < SUN_RADIUS && dy < SUN_RADIUS {
+            // The radius goes to `int` before it is squared: two byte
+            // constants multiply as bytes, and 40 * 40 would wrap to 64.
+            let reach = SUN_RADIUS as int;
+            if dx as int * dx as int + dy as int * dy as int < reach * reach {
+                image_rgb(255, 150 + dy * 2, 70);
+                return;
+            }
+        }
+        // Deep blue at the top, orange at the horizon.
+        image_rgb(40 + y * 2, 20 + y, 120 - y);
+        return;
+    }
+
+    let depth = y - HORIZON;
+    // The reflection narrows with depth and is broken into bands, which is
+    // all a ripple has to be at this size.
+    if dx < SUN_RADIUS - depth && depth % 4 < 2 {
+        image_rgb(230, 140, 60);
+        return;
+    }
+    image_rgb(10, 30 + depth, 70 + depth * 2);
+}
+
+fn main() {
+    image_render(WIDTH, HEIGHT);
+}

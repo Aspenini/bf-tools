@@ -1,0 +1,264 @@
+// Arrays of bytes: filling, copying, searching, counting, sorting.
+//
+//     import "std/array.cra";
+//
+// Every function takes `byte[]`, an array of any length. Every call is inlined,
+// so each call site already knows the length of the array it passes, and that
+// costs nothing at run time.
+//
+// Like std/string.cra, these look at no more than the first 255 elements of an
+// array, so that every index fits in a byte: walking the tape with a 16-bit
+// index costs about twice as much. A longer array is fine, and how much of it
+// to look at is worked out when the program is compiled.
+//
+// Reading `a[i]` walks the tape out to element `i` and back, so the cost of a
+// loop over an array grows with the square of its length. Sorting is the
+// extreme case, and is meant for tens of elements, not thousands.
+
+import "text.cra";
+
+// --------------------------------------------------------------------------
+// FILLING AND COPYING
+// --------------------------------------------------------------------------
+
+// Set every element to `value`.
+fn array_fill(values: byte[], value: byte) {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let i: byte = 0;
+    while i != limit {
+        values[i] = value;
+        i += 1;
+    }
+}
+
+// Copy as much of `src` into `dest` as fits in both, answering how many
+// elements that was.
+fn array_copy(dest: byte[], src: byte[]) -> byte {
+    // Every test here is on lengths, so all of it is decided when the program
+    // is compiled.
+    let limit: byte = 255;
+    if len(dest) < 255 && len(dest) <= len(src) {
+        limit = len(dest) as byte;
+    } else if len(src) < 255 {
+        limit = len(src) as byte;
+    }
+
+    let i: byte = 0;
+    while i != limit {
+        dest[i] = src[i];
+        i += 1;
+    }
+    return limit;
+}
+
+// Swap two elements.
+fn array_swap(values: byte[], first: byte, second: byte) {
+    let held = values[first];
+    values[first] = values[second];
+    values[second] = held;
+}
+
+// Put the elements in the opposite order.
+fn array_reverse(values: byte[]) {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+    if limit == 0 {
+        return;
+    }
+
+    let low: byte = 0;
+    let high: byte = limit - 1;
+    while low < high {
+        let held = values[low];
+        values[low] = values[high];
+        values[high] = held;
+        low += 1;
+        high -= 1;
+    }
+}
+
+// --------------------------------------------------------------------------
+// ADDING UP AND FINDING
+// --------------------------------------------------------------------------
+
+// The total of every element. 255 elements of 255 is 65025, so this always
+// fits in an `int`.
+fn array_sum(values: byte[]) -> int {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let total: int = 0;
+    let i: byte = 0;
+    while i != limit {
+        total += values[i] as int;
+        i += 1;
+    }
+    return total;
+}
+
+// The smallest element.
+fn array_min(values: byte[]) -> byte {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let smallest: byte = 255;
+    let i: byte = 0;
+    while i != limit {
+        let value = values[i];
+        if value < smallest {
+            smallest = value;
+        }
+        i += 1;
+    }
+    return smallest;
+}
+
+// The largest element.
+fn array_max(values: byte[]) -> byte {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let largest: byte = 0;
+    let i: byte = 0;
+    while i != limit {
+        let value = values[i];
+        if value > largest {
+            largest = value;
+        }
+        i += 1;
+    }
+    return largest;
+}
+
+// The index of the first element equal to `wanted`, or `NOT_FOUND`.
+fn array_find(values: byte[], wanted: byte) -> byte {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let i: byte = 0;
+    while i != limit {
+        if values[i] == wanted {
+            return i;
+        }
+        i += 1;
+    }
+    return NOT_FOUND;
+}
+
+// How many elements equal `wanted`.
+fn array_count(values: byte[], wanted: byte) -> byte {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let count: byte = 0;
+    let i: byte = 0;
+    while i != limit {
+        if values[i] == wanted {
+            count += 1;
+        }
+        i += 1;
+    }
+    return count;
+}
+
+// Whether two arrays hold the same elements. Arrays of different lengths are
+// never equal.
+fn array_equal(first: byte[], second: byte[]) -> bool {
+    if len(first) != len(second) {
+        return false;
+    }
+    let limit: byte = 255;
+    if len(first) < 255 {
+        limit = len(first) as byte;
+    }
+
+    let i: byte = 0;
+    while i != limit {
+        if first[i] != second[i] {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+// --------------------------------------------------------------------------
+// SORTING
+// --------------------------------------------------------------------------
+
+// Sort into ascending order.
+//
+// Insertion sort: each element in turn slides left past the larger ones before
+// it. That is the right choice here rather than a cleverer sort, because
+// every element read costs a walk along the tape, and insertion sort reads
+// only the neighbour it is about to step past - nearly sorted input costs
+// almost nothing.
+fn array_sort(values: byte[]) {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+    if len(values) < 2 {
+        return;
+    }
+
+    let i: byte = 1;
+    while i != limit {
+        let value = values[i];
+        let j = i;
+        while j != 0 {
+            let before = values[j - 1];
+            if before <= value {
+                break;
+            }
+            values[j] = before;
+            j -= 1;
+        }
+        values[j] = value;
+        i += 1;
+    }
+}
+
+// The index of an element equal to `wanted` in an array already sorted into
+// ascending order, or `NOT_FOUND`. With duplicates, the first of them.
+//
+// Halving costs a comparison per step against the whole walk of a search from
+// the start, so on a sorted array of more than a handful of elements this
+// reads far fewer of them than `array_find`.
+fn array_search_sorted(values: byte[], wanted: byte) -> byte {
+    let limit: byte = 255;
+    if len(values) < 255 {
+        limit = len(values) as byte;
+    }
+
+    let low: byte = 0;
+    let high = limit;
+    while low != high {
+        let middle = low + ((high - low) >> 1);
+        if values[middle] < wanted {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if low != limit && values[low] == wanted {
+        return low;
+    }
+    return NOT_FOUND;
+}

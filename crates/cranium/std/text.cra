@@ -12,6 +12,12 @@
 // The distance between 'a' and 'A'.
 const CASE_GAP = 32;
 
+// What a search answers when there is nothing to find: `str_find` in
+// std/string.cra and `array_find` in std/array.cra. Neither looks past index
+// 254, so this is never also a real position. It lives here, in a file with no
+// globals, so either can import it without costing a program anything.
+const NOT_FOUND = 255;
+
 // --------------------------------------------------------------------------
 // ASKING
 // --------------------------------------------------------------------------

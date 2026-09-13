@@ -35,10 +35,6 @@
 
 import "text.cra";
 
-// What `str_find` returns when the character is not there. No string is
-// searched past index 254, so this is never also a real position.
-const NOT_FOUND = 255;
-
 // Set by `read_line` when input ran out rather than a line ending.
 //
 // A line can end at end of input and still have text in it, so check this
