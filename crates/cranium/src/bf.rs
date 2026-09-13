@@ -447,10 +447,13 @@ impl Bf {
     /// formed by cancelling the two cells against each other.
     pub fn byte_eq(&mut self, out: Addr, lhs: Addr, rhs: Addr) {
         self.scope(|bf| {
-            let diff = bf.alloc_zeroed(1);
+            // The difference brings the two zero cells its test needs, so it
+            // can be tested where it is instead of copied again to test it.
+            let diff = bf.alloc_zeroed(3);
             bf.add_copy(lhs, diff);
             bf.sub_copy(rhs, diff);
-            bf.is_zero(out, diff);
+            bf.zero(out);
+            bf.if_zero_in_place(diff, |bf| bf.set(out, 1));
             bf.zero(diff);
         });
     }

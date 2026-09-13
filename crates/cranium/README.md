@@ -142,8 +142,8 @@ fn main() {
 ```
 
 That is [`truecolor.cra`](examples/truecolor.cra) in full. No window, no
-driver, no runtime, and nothing added to the language: 64x32 pixels out of 49K
-Brainfuck commands and 72 tape cells, at about 5 ms a frame.
+driver, no runtime, and nothing added to the language: 64x32 pixels out of 41K
+Brainfuck commands and 76 tape cells, at about 5 ms a frame.
 
 **There is no framebuffer, on purpose.** An array indexed at run time costs
 roughly `i²` steps to reach element `i`, and it shows:
@@ -151,7 +151,7 @@ roughly `i²` steps to reach element `i`, and it shows:
 | Pixels held in an array | One full sweep |
 | --- | --- |
 | 512 | 22 ms |
-| 1024 | 94 ms |
+| 1024 | 96 ms |
 | 2048 | 420 ms |
 
 A 64x32 buffer is 2048 pixels, so `plot(x, y)` into one would cap out near two
@@ -218,10 +218,10 @@ It is also where the scan-order design earns itself. A ray belongs to a
 *column*, not a pixel, so casting one per `shade` call would mean 2048 casts a
 frame instead of 64. Instead `cast_scene` runs first and leaves one entry per
 column behind, and `shade` only looks up the column its pixel landed in. A
-whole frame takes about 18 ms.
+whole frame takes about 10 ms.
 
-At 740K Brainfuck commands it is one of the larger examples here, and most of
-the half second it takes to start is `hypothalamus` compiling that.
+At 670K Brainfuck commands it is one of the larger examples here, and most of
+the third of a second it takes to start is `hypothalamus` compiling that.
 
 ## Text interfaces
 
@@ -283,8 +283,8 @@ site gets its own copy. Two things in the compiler keep it affordable. String
 literals can be passed where a `byte[]` is expected, so text goes straight into
 the call. And a constant argument is known inside the function, so a style
 passed as a constant keeps only the code for that style: `ui_box(..., BORDER_DOUBLE)`
-is 25K Brainfuck commands, where the same box with its style read at run time
-is 67K.
+is 17K Brainfuck commands, where the same box with its style read at run time
+is 57K.
 
 ## The language
 
@@ -479,21 +479,22 @@ what it does:
   output, instead of four — 977 KB to 438 KB.
 
 Neither is a trick: they are just "call the big helper from one place". A
-cheaper `<` in the compiler has since taken it to 106 KB, which is the report
-below.
+cheaper `<`, cheaper number printing and leaner loops in the compiler have
+since taken it to 58 KB, which is the report below.
 
 Finding *which* helper used to be guesswork. `--stats` now says:
 
 ```bash
 $ cranium lobotomy.cra --stats -o lobotomy.bf
-cranium: 106300 brainfuck commands, 65 tape cells
+cranium: 57959 brainfuck commands, 66 tape cells
 cranium: where the commands went:
-cranium:     41601 (39%)  print            8 calls, 46-19878
-cranium:     10389 ( 9%)  println          18 calls, 23-1692
-cranium:      8547 ( 8%)  emit             1 call
-cranium:      7901 ( 7%)  kind_of          1 call
-cranium: note: `print` is inlined 8 times; calling it from one place would save
-cranium:       roughly 21723 commands, about 20% of the program
+cranium:     10421 (17%)  println          18 calls, 23-1692
+cranium:      7331 (12%)  kind_of          1 call
+cranium:      6469 (11%)  emit             1 call
+cranium:      6255 (10%)  push             1 call
+cranium:      5690 ( 9%)  print            8 calls, 47-1922
+cranium: note: `println` is inlined 18 times; calling it from one place would save
+cranium:       roughly 8729 commands, about 15% of the program
 ```
 
 The number is what each function's *own* body contributed, with the calls it
@@ -501,7 +502,7 @@ made subtracted — so the column adds up rather than counting nested calls
 twice, and the percentages partition the program.
 
 Where call sites differ wildly the report gives a range instead of an average,
-because they often do: `print` above runs from 46 commands to 19,878. The
+because they often do: `print` above runs from 47 commands to 1,922. The
 cheap ones are strings and the expensive one is a number, which is the
 decimal-conversion routine showing up exactly where the advice above says it
 will.
@@ -522,7 +523,7 @@ scalars. `--stats` shows where they landed:
 
 ```bash
 $ cranium bfi.cra --stats -o bfi.bf
-cranium: 312616 brainfuck commands, 3216 tape cells
+cranium: 304760 brainfuck commands, 3216 tape cells
 cranium:   39 cells away: program (1007 cells)
 cranium:   1046 cells away: jump (1007 cells)
 cranium:   2053 cells away: tape (1031 cells)
@@ -536,8 +537,9 @@ the one mentioned most often in the source.
 
 Comparisons come next. `==` and `!=` are cheap; `<`, `<=`, `>`, and `>=` count
 both sides down together until one runs out, which is also linear in the
-values but a longer loop — about 1,350 commands for an `if` on a byte, where
-splitting each byte into bits used to take 7,950. Multiplication
+values but a longer loop — about 1,100 commands for a whole program that
+reads a byte and branches on `<`, where splitting each byte into bits took
+7,950. Multiplication
 and division on `int` use shift-and-add, so they stay bounded by the bit width,
 and multiplying by a constant only pays for that constant's set bits.
 

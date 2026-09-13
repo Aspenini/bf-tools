@@ -976,6 +976,17 @@ impl<'a> Compiler<'a> {
             return error(span, "only scalar values can be assigned");
         }
 
+        // `x += 1` and its relatives: change the variable where it is, rather
+        // than build the sum somewhere else and copy it back.
+        if let (Some(op @ (BinOp::Add | BinOp::Sub)), Place::Direct { addr, .. }) = (op, &place)
+            && let Some(step) = self.constant_step(&ty, op, value)
+        {
+            let addr = *addr;
+            self.bf.num_add_small(addr, ty.width(), step);
+            self.bf.release_to(mark);
+            return Ok(());
+        }
+
         let stored = self.bf.alloc_zeroed(ty.width());
         let inner = self.bf.watermark();
 
@@ -999,6 +1010,31 @@ impl<'a> Compiler<'a> {
         )?;
         self.bf.release_to(mark);
         Ok(())
+    }
+
+    /// How much `target op= value` changes a `ty` by, when that can be done in
+    /// place: `value` is a constant, small enough for [`Bf::num_add_small`]
+    /// on anything wider than a byte, and of a type that combines with `ty`
+    /// into `ty` itself - so the ordinary path would reach the same result and
+    /// report no error.
+    fn constant_step(&self, ty: &Type, op: BinOp, value: &Expr) -> Option<i64> {
+        if matches!(ty, Type::Bool) {
+            return None;
+        }
+        let value_ty = self.type_of(value).ok()?;
+        if common_type(ty, &value_ty).as_ref() != Some(ty) {
+            return None;
+        }
+        let amount = self.fold(value)?;
+        let step = if matches!(op, BinOp::Sub) {
+            amount.checked_neg()?
+        } else {
+            amount
+        };
+        if ty.width() > 1 && !(-4..=4).contains(&step) {
+            return None;
+        }
+        Some(step)
     }
 
     fn emit_if(
@@ -1066,36 +1102,72 @@ impl<'a> Compiler<'a> {
         result
     }
 
-    /// Evaluate a loop condition, folding in "and nothing has interrupted us".
-    fn loop_condition(&mut self, cond: Option<&'a Expr>, out: Addr) -> CResult<()> {
-        let mark = self.bf.watermark();
-        match cond {
-            Some(expr) => {
-                let evaluated = self.eval(expr)?;
-                self.truthy(&evaluated, out, expr.span())?;
+    /// `while` and `loop`.
+    ///
+    /// The test comes at the top of each time round, before the body, so the
+    /// condition is compiled once rather than once before the loop and again
+    /// at the end of it. `running` is cleared before the test and only running
+    /// the body sets it again, which is what lets a failed test end the loop
+    /// without a second copy of anything.
+    fn emit_loop(&mut self, cond: Option<&'a Expr>, body: &'a [Stmt]) -> CResult<()> {
+        // A condition known now is either no loop at all or a loop with
+        // nothing to test.
+        let cond = match cond {
+            Some(expr) => match self.fold(expr) {
+                Some(0) => return self.check_only(|this| this.loop_body(body)),
+                Some(_) => None,
+                None => Some(expr),
+            },
+            None => None,
+        };
+        let interruptible = body.iter().any(interrupts);
+
+        let running = self.bf.alloc_zeroed(1);
+        self.bf.set(running, 1);
+        self.bf.open_loop(running);
+        if cond.is_some() || interruptible {
+            self.bf.zero(running);
+            let taken = self.bf.alloc_zeroed(1);
+            let mark = self.bf.watermark();
+            match cond {
+                Some(expr) => {
+                    let evaluated = self.eval(expr)?;
+                    self.truthy(&evaluated, taken, expr.span())?;
+                }
+                None => self.bf.set(taken, 1),
             }
-            None => self.bf.set(out, 1),
+            if interruptible {
+                let control = self.control;
+                self.bf.if_nonzero(control, |bf| bf.zero(taken));
+            }
+            self.bf.release_to(mark);
+
+            self.bf.open_loop(taken);
+            self.bf.set(running, 1);
+            self.loop_body(body)?;
+            self.bf.zero(taken);
+            self.bf.close_loop(taken);
+        } else {
+            // Nothing in the body can leave, so there is nothing to test.
+            self.loop_body(body)?;
         }
-        let control = self.control;
-        self.bf.if_nonzero(control, |bf| bf.zero(out));
-        self.bf.release_to(mark);
+        self.bf.close_loop(running);
+
+        if jumps(body, false) {
+            self.clear_control(CONTROL_BREAK);
+        }
         Ok(())
     }
 
-    fn emit_loop(&mut self, cond: Option<&'a Expr>, body: &'a [Stmt]) -> CResult<()> {
-        let running = self.bf.alloc_zeroed(1);
-        self.loop_condition(cond, running)?;
-
-        self.bf.open_loop(running);
+    /// A loop's body, and the `continue` it may have ended with.
+    fn loop_body(&mut self, body: &'a [Stmt]) -> CResult<()> {
         self.loop_depth += 1;
         let result = self.block(body);
         self.loop_depth -= 1;
         result?;
-        self.clear_control(CONTROL_CONTINUE);
-        self.loop_condition(cond, running)?;
-        self.bf.close_loop(running);
-
-        self.clear_control(CONTROL_BREAK);
+        if jumps(body, true) {
+            self.clear_control(CONTROL_CONTINUE);
+        }
         Ok(())
     }
 
@@ -1141,46 +1213,40 @@ impl<'a> Compiler<'a> {
             },
         );
 
-        if ty.is_signed() {
-            self.bf.num_signed_lt(running, counter, limit, width);
-        } else {
-            self.bf.num_lt(running, counter, limit, width);
-        }
-        let control = self.control;
-        self.bf.if_nonzero(control, |bf| bf.zero(running));
-
+        // Tested at the top of each time round, as `emit_loop` explains.
+        let interruptible = body.iter().any(interrupts);
+        self.bf.set(running, 1);
         self.bf.open_loop(running);
-        self.loop_depth += 1;
-        let result = self.block(body);
-        self.loop_depth -= 1;
-        result?;
-        self.clear_control(CONTROL_CONTINUE);
-        self.increment(counter, width);
+        self.bf.zero(running);
+        let taken = self.bf.alloc_zeroed(1);
         if ty.is_signed() {
-            self.bf.num_signed_lt(running, counter, limit, width);
+            self.bf.num_signed_lt(taken, counter, limit, width);
         } else {
-            self.bf.num_lt(running, counter, limit, width);
+            self.bf.num_lt(taken, counter, limit, width);
         }
-        self.bf.if_nonzero(control, |bf| bf.zero(running));
+        if interruptible {
+            let control = self.control;
+            self.bf.if_nonzero(control, |bf| bf.zero(taken));
+        }
+
+        self.bf.open_loop(taken);
+        self.bf.set(running, 1);
+        self.loop_body(body)?;
+        self.increment(counter, width);
+        self.bf.zero(taken);
+        self.bf.close_loop(taken);
         self.bf.close_loop(running);
 
-        self.clear_control(CONTROL_BREAK);
+        if jumps(body, false) {
+            self.clear_control(CONTROL_BREAK);
+        }
         self.pop_scope();
         self.bf.release_to(mark);
         Ok(())
     }
 
     fn increment(&mut self, addr: Addr, width: usize) {
-        if width == 1 {
-            self.bf.add(addr, 1);
-            return;
-        }
-        let mark = self.bf.watermark();
-        let one = self.bf.alloc_zeroed(width);
-        self.bf.num_set(one, width, 1);
-        self.bf.num_add_assign(addr, one, width);
-        self.bf.num_zero(one, width);
-        self.bf.release_to(mark);
+        self.bf.num_add_small(addr, width, 1);
     }
 
     /// Reset the control cell if it currently holds `reason`.
@@ -1568,12 +1634,20 @@ impl<'a> Compiler<'a> {
         };
         let width = operand_ty.width();
         let signed = operand_ty.is_signed();
-        let staged_left = self.bf.alloc_zeroed(width);
-        let staged_right = self.bf.alloc_zeroed(width);
-        let left_ty = left.ty.clone();
-        let right_ty = right.ty.clone();
-        self.widen(left.addr, &left_ty, staged_left, width);
-        self.widen(right.addr, &right_ty, staged_right, width);
+        // A comparison never writes to its operands, so when neither needs
+        // widening they can be compared where they are instead of copied.
+        let (staged_left, staged_right) =
+            if op.is_comparison() && left.ty.width() == width && right.ty.width() == width {
+                (left.addr, right.addr)
+            } else {
+                let staged_left = self.bf.alloc_zeroed(width);
+                let staged_right = self.bf.alloc_zeroed(width);
+                let left_ty = left.ty.clone();
+                let right_ty = right.ty.clone();
+                self.widen(left.addr, &left_ty, staged_left, width);
+                self.widen(right.addr, &right_ty, staged_right, width);
+                (staged_left, staged_right)
+            };
 
         if op.is_comparison() {
             let addr = self.bf.alloc_zeroed(1);
@@ -1841,7 +1915,11 @@ impl<'a> Compiler<'a> {
         self.pop_scope();
         result?;
 
-        self.clear_control(CONTROL_RETURN);
+        // Only a `return` sets the control cell, so a function without one
+        // leaves nothing to clear.
+        if function.body.iter().any(returns) {
+            self.clear_control(CONTROL_RETURN);
+        }
         self.bf.release_to(mark);
         self.leave_cost();
 
@@ -2181,6 +2259,28 @@ fn coercible(from: &Type, to: &Type) -> bool {
 }
 
 /// True when a statement can leave the control cell set for its own block.
+/// Whether `body` has a `continue` (or with `continues` false, a `break`) that
+/// belongs to the loop `body` is the body of. A loop nested inside it deals
+/// with its own.
+fn jumps(body: &[Stmt], continues: bool) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Stmt::Break { .. } => !continues,
+        Stmt::Continue { .. } => continues,
+        Stmt::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            jumps(then_block, continues)
+                || else_block
+                    .as_deref()
+                    .is_some_and(|block| jumps(block, continues))
+        }
+        Stmt::Block { body, .. } => jumps(body, continues),
+        _ => false,
+    })
+}
+
 fn interrupts(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Return { .. } => true,

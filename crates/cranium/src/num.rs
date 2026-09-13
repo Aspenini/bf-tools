@@ -765,8 +765,8 @@ impl Bf {
     /// Write the number at `addr` to standard output in decimal, without
     /// leading zeros.
     pub fn num_print_decimal(&mut self, addr: Addr, width: usize) {
-        if width == 1 {
-            self.byte_print_decimal(addr);
+        if width <= 2 {
+            self.counted_print_decimal(addr, width);
             return;
         }
         self.scope(|bf| {
@@ -816,66 +816,139 @@ impl Bf {
         });
     }
 
-    /// [`Bf::num_print_decimal`] for a single byte.
+    /// [`Bf::num_print_decimal`] for a `byte` or an `int`.
     ///
     /// The general routine subtracts powers of ten, comparing before every
-    /// subtraction. A byte is small enough to simply count: a copy of it
-    /// counts down to zero while the digits count up. Each of the two lower
-    /// digits is kept as "how many to go until 10", so the moment it carries
-    /// is the moment it reaches zero, and [`Bf::if_zero_in_place`] notices that
-    /// in a fixed number of steps. There is no comparison anywhere, which
-    /// makes this a fraction of the size, and at most 255 trips round the loop.
-    fn byte_print_decimal(&mut self, addr: Addr) {
+    /// subtraction. A byte or an `int` is small enough to count instead: the
+    /// digits count up while copies of its bytes count down. Each unit of the
+    /// low byte adds one, and each unit of the high byte adds 256 - six ones,
+    /// five tens and two hundreds - so even 65,535 is a few thousand steps.
+    ///
+    /// Every place but the top one is kept as "how many to go until 10", so
+    /// the moment it carries is the moment it reaches zero, and
+    /// [`Bf::if_zero_in_place`] notices that in a fixed number of steps. There
+    /// is no comparison anywhere, which is what makes this a fraction of the
+    /// size of the general routine.
+    fn counted_print_decimal(&mut self, addr: Addr, width: usize) {
+        // The top place never carries: 255 has three digits and 65,535 five.
+        let places = if width == 1 { 3 } else { 5 };
         self.scope(|bf| {
-            let count = bf.alloc_zeroed(1);
-            // Each brings the two zero cells its test needs.
-            let ones_to_go = bf.alloc_zeroed(3);
-            let tens_to_go = bf.alloc_zeroed(3);
-            let hundreds = bf.alloc_zeroed(1);
-            bf.add_copy(addr, count);
-            bf.set(ones_to_go, 10);
-            bf.set(tens_to_go, 10);
+            let low = bf.alloc_zeroed(1);
+            let high = bf.alloc_zeroed(1);
+            let steps = bf.alloc_zeroed(1);
+            // Each lower place brings the two zero cells its test needs.
+            let to_go: Vec<Addr> = (1..places).map(|_| bf.alloc_zeroed(3)).collect();
+            let top = bf.alloc_zeroed(1);
+            bf.add_copy(addr, low);
+            for &place in &to_go {
+                bf.set(place, 10);
+            }
 
-            bf.loop_at(count, |bf| {
-                bf.add(count, -1);
-                bf.add(ones_to_go, -1);
-                bf.if_zero_in_place(ones_to_go, |bf| {
-                    bf.set(ones_to_go, 10);
-                    bf.add(tens_to_go, -1);
-                    bf.if_zero_in_place(tens_to_go, |bf| {
-                        bf.set(tens_to_go, 10);
-                        bf.add(hundreds, 1);
-                    });
+            if width == 2 {
+                bf.add_copy(addr + 1, high);
+                bf.loop_at(high, |bf| {
+                    bf.add(high, -1);
+                    for (place, times) in [(0, 6), (1, 5), (2, 2)] {
+                        bf.set(steps, times);
+                        bf.loop_at(steps, |bf| {
+                            bf.add(steps, -1);
+                            bf.count_up(&to_go[place..], top);
+                        });
+                    }
                 });
+            }
+            bf.loop_at(low, |bf| {
+                bf.add(low, -1);
+                bf.count_up(&to_go, top);
             });
 
             let digit = bf.alloc_zeroed(1);
             let started = bf.alloc_zeroed(1);
-            bf.if_nonzero(hundreds, |bf| {
+            bf.if_nonzero(top, |bf| {
                 bf.set(started, 1);
-                bf.add(hundreds, b'0' as i32);
-                bf.write(hundreds);
-                bf.add(hundreds, -(b'0' as i32));
+                bf.add(top, b'0' as i32);
+                bf.write(top);
             });
+            bf.zero(top);
 
-            // 10 minus "to go" is the digit, and emptying the counter into it
-            // leaves the counter at zero for free.
-            bf.set(digit, 10);
-            bf.move_sub(tens_to_go, &[digit]);
-            bf.if_nonzero(digit, |bf| bf.set(started, 1));
-            bf.if_nonzero(started, |bf| {
-                bf.add(digit, b'0' as i32);
-                bf.write(digit);
-            });
-
-            bf.set(digit, 10);
-            bf.move_sub(ones_to_go, &[digit]);
-            bf.add(digit, b'0' as i32);
-            bf.write(digit);
-
-            bf.zero(digit);
+            for (index, &place) in to_go.iter().enumerate().rev() {
+                // 10 minus "to go" is the digit, and emptying the counter into
+                // it leaves the counter at zero for free.
+                bf.set(digit, 10);
+                bf.move_sub(place, &[digit]);
+                if index == 0 {
+                    bf.add(digit, b'0' as i32);
+                    bf.write(digit);
+                } else {
+                    bf.if_nonzero(digit, |bf| bf.set(started, 1));
+                    bf.if_nonzero(started, |bf| {
+                        bf.add(digit, b'0' as i32);
+                        bf.write(digit);
+                    });
+                }
+                bf.zero(digit);
+            }
             bf.zero(started);
-            bf.zero(hundreds);
+        });
+    }
+
+    /// Count one more at the lowest of `places`, carrying upwards: each place
+    /// holds how many more it can take before it reaches 10, and `top`, above
+    /// them all, simply counts.
+    fn count_up(&mut self, places: &[Addr], top: Addr) {
+        match places.split_first() {
+            None => self.add(top, 1),
+            Some((&place, higher)) => {
+                self.add(place, -1);
+                self.if_zero_in_place(place, |bf| {
+                    bf.set(place, 10);
+                    bf.count_up(higher, top);
+                });
+            }
+        }
+    }
+
+    /// Add the constant `step` to the number at `addr`, wrapping.
+    ///
+    /// A byte takes it in one go. A wider number takes it one unit at a time,
+    /// carrying into or borrowing from the cell above whenever the low one
+    /// wraps, so this is for small steps: `x += 1` is what it exists for, and
+    /// it is a fraction of the size of a full addition.
+    pub fn num_add_small(&mut self, addr: Addr, width: usize, step: i64) {
+        if width == 1 {
+            self.add(addr, step.rem_euclid(256) as i32);
+            return;
+        }
+        for _ in 0..step.unsigned_abs() {
+            if step > 0 {
+                self.add(addr, 1);
+                self.carry_on_zero(addr, width, 1);
+            } else {
+                self.carry_on_zero(addr, width, -1);
+                self.add(addr, -1);
+            }
+        }
+    }
+
+    /// Carry `delta` into the cells above `addr` when `addr` holds zero: after
+    /// adding one, a zero means the cell wrapped, and before subtracting one,
+    /// a zero means it is about to.
+    fn carry_on_zero(&mut self, addr: Addr, width: usize, delta: i32) {
+        if width == 1 {
+            return;
+        }
+        self.scope(|bf| {
+            let wrapped = bf.alloc_zeroed(1);
+            bf.is_zero(wrapped, addr);
+            bf.if_nonzero_consume(wrapped, |bf| {
+                if delta > 0 {
+                    bf.add(addr + 1, 1);
+                    bf.carry_on_zero(addr + 1, width - 1, 1);
+                } else {
+                    bf.carry_on_zero(addr + 1, width - 1, -1);
+                    bf.add(addr + 1, -1);
+                }
+            });
         });
     }
 }

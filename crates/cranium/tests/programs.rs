@@ -1180,7 +1180,7 @@ fn bounce_example_compiles() {
     );
 }
 
-/// The raycaster is one of the biggest examples - about 740K Brainfuck
+/// The raycaster is one of the biggest examples - about 670K Brainfuck
 /// commands - and draws a full frame per move, so running it here would cost
 /// more than it is worth. This checks it still compiles, which is what would
 /// break if `std/gfx.cra` changed under it.
@@ -1244,7 +1244,10 @@ fn a_function_called_twice_costs_twice() {
 
 #[test]
 fn printing_a_number_costs_far_more_than_printing_a_string() {
-    // The README says so; this is the number behind it.
+    // The README says so; this is the number behind it. Printing an `int`
+    // counts its digits out rather than dividing, which brought it from
+    // about 150 times the cost of a short string to about 13, but it is still
+    // the thing to call from one place.
     let compiled =
         compile_str("fn main() {\n    print(\"hello\");\n    let n: int = 7;\n    print(n);\n}\n")
             .expect("compiles");
@@ -1252,7 +1255,7 @@ fn printing_a_number_costs_far_more_than_printing_a_string() {
     let print = cost_of(&compiled, "print");
     assert_eq!(print.calls, 2);
     assert!(
-        print.largest > print.smallest * 20,
+        print.largest > print.smallest * 10,
         "a decimal conversion should dwarf a string: {} vs {}",
         print.smallest,
         print.largest

@@ -73,7 +73,7 @@ fn set_rgb(r: byte, g: byte, b: byte) {
 // `cranium --stats` puts a number on that: the number `print` below costs
 // about 3,300 Brainfuck commands, against 92 for each of the string prints
 // above it. Six of the expensive one would add another 16,000 or so to a
-// program of 49,000.
+// program of 41,000.
 // --------------------------------------------------------------------------
 fn gfx_emit_cell() {
     let layer: byte = 0;
