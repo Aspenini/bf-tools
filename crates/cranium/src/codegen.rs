@@ -994,7 +994,7 @@ impl<'a> Compiler<'a> {
             None => self.eval_into(value, stored, &ty)?,
             Some(op) => {
                 let current = self.load(&place)?;
-                let combined = self.binary(op, &current, value, span)?;
+                let combined = self.binary(op, &current, None, value, span)?;
                 self.store_scalar(stored, &ty, &combined, span)?;
             }
         }
@@ -1574,17 +1574,43 @@ impl<'a> Compiler<'a> {
                     return self.short_circuit(*op, lhs, rhs, *span);
                 }
                 let left = self.eval(lhs)?;
-                self.binary(*op, &left, rhs, *span)
+                self.binary(*op, &left, Some(lhs), rhs, *span)
             }
 
             Expr::Call { name, args, span } => self.call(name, args, *span),
         }
     }
 
+    /// Whether a value of `ty` - produced by `expr`, when that is known - has
+    /// nothing in its high byte once it is widened: it is an unsigned byte, or
+    /// it was cast from one, which widens with zeros. An `as int` on a byte
+    /// gives an `int`, so the type alone cannot say this.
+    fn high_byte_empty(&self, ty: &Type, expr: Option<&Expr>) -> bool {
+        let unsigned_byte = |ty: &Type| ty.width() == 1 && !ty.is_signed();
+        if unsigned_byte(ty) {
+            return true;
+        }
+        match expr {
+            Some(Expr::Cast { value, .. }) => {
+                self.type_of(value).is_ok_and(|inner| unsigned_byte(&inner))
+            }
+            _ => false,
+        }
+    }
+
     /// Apply a binary operator whose left side is already evaluated.
     ///
-    /// Compound assignment reuses this so `a[i] += 1` evaluates `i` once.
-    fn binary(&mut self, op: BinOp, left: &Value, rhs: &'a Expr, span: Span) -> CResult<Value> {
+    /// Compound assignment reuses this so `a[i] += 1` evaluates `i` once, and
+    /// passes no `lhs`; an expression passes the one it evaluated `left` from,
+    /// which is how a multiplication can tell that operand was cast from a byte.
+    fn binary(
+        &mut self,
+        op: BinOp,
+        left: &Value,
+        lhs: Option<&Expr>,
+        rhs: &'a Expr,
+        span: Span,
+    ) -> CResult<Value> {
         let right = self.eval(rhs)?;
         if !left.ty.is_scalar() || !right.ty.is_scalar() {
             return error(span, format!("`{}` needs scalar operands", op.spelling()));
@@ -1703,7 +1729,23 @@ impl<'a> Compiler<'a> {
                     self.bf
                         .num_mul_const(addr, staged_left, width, factor as u64)
                 }
-                _ => self.bf.num_mul(addr, staged_left, staged_right, width),
+                _ => {
+                    // An operand with nothing in its high byte - a byte, or a
+                    // cast from one - needs only its low eight bits stepped
+                    // through by shift-and-add. A signed byte does not qualify:
+                    // widening fills a negative one's high byte with ones.
+                    let right_narrow = self.high_byte_empty(&right.ty, Some(rhs));
+                    let left_narrow = self.high_byte_empty(&left.ty, lhs);
+                    if width > 1 && right_narrow {
+                        self.bf
+                            .num_mul_by(addr, staged_left, staged_right, width, 1)
+                    } else if width > 1 && left_narrow {
+                        self.bf
+                            .num_mul_by(addr, staged_right, staged_left, width, 1)
+                    } else {
+                        self.bf.num_mul(addr, staged_left, staged_right, width)
+                    }
+                }
             },
             BinOp::Div => {
                 let remainder = self.bf.alloc_zeroed(width);

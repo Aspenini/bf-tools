@@ -405,6 +405,17 @@ impl Bf {
     /// small. Wider values use shift-and-add so the cost stays bounded by the
     /// bit width.
     pub fn num_mul(&mut self, out: Addr, lhs: Addr, rhs: Addr, width: usize) {
+        self.num_mul_by(out, lhs, rhs, width, width);
+    }
+
+    /// [`Bf::num_mul`] when only the low `rhs_width` cells of `rhs` can be
+    /// nonzero, as when an `int` was widened from a `byte`.
+    ///
+    /// Shift-and-add takes a step for every bit of the multiplier, and bits in
+    /// cells known to be zero never add anything, so leaving them out halves
+    /// the code and the time of multiplying an `int` by a byte.
+    pub fn num_mul_by(&mut self, out: Addr, lhs: Addr, rhs: Addr, width: usize, rhs_width: usize) {
+        let rhs_width = rhs_width.min(width);
         self.num_zero(out, width);
         if width == 1 {
             self.scope(|bf| {
@@ -420,27 +431,27 @@ impl Bf {
 
         self.scope(|bf| {
             let shifted = bf.alloc_zeroed(width);
-            let multiplier = bf.alloc_zeroed(width);
+            let multiplier = bf.alloc_zeroed(rhs_width);
             let bit = bf.alloc_zeroed(1);
             let discard = bf.alloc_zeroed(1);
             bf.num_copy(lhs, shifted, width);
-            bf.num_copy(rhs, multiplier, width);
+            bf.num_copy(rhs, multiplier, rhs_width);
 
             // A counted loop rather than an unrolled one: the body is identical
             // every time, and emitting it once keeps the program small enough
             // for an optimizing backend to chew through.
             let steps = bf.alloc_zeroed(1);
-            bf.set(steps, (width * BITS_PER_CELL) as u8);
+            bf.set(steps, (rhs_width * BITS_PER_CELL) as u8);
             bf.loop_at(steps, |bf| {
                 bf.add(steps, -1);
-                bf.num_shr1(multiplier, width, bit);
+                bf.num_shr1(multiplier, rhs_width, bit);
                 bf.if_nonzero_consume(bit, |bf| bf.num_add_assign(out, shifted, width));
                 bf.num_shl1(shifted, width, discard);
             });
 
             bf.zero(discard);
             bf.num_zero(shifted, width);
-            bf.num_zero(multiplier, width);
+            bf.num_zero(multiplier, rhs_width);
         });
     }
 
