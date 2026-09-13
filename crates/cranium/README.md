@@ -142,21 +142,21 @@ fn main() {
 ```
 
 That is [`truecolor.cra`](examples/truecolor.cra) in full. No window, no
-driver, no runtime, and nothing added to the language: 64x32 pixels out of 140K
-Brainfuck commands and 91 tape cells, at about 18 ms a frame.
+driver, no runtime, and nothing added to the language: 64x32 pixels out of 53K
+Brainfuck commands and 73 tape cells, at about 7 ms a frame.
 
 **There is no framebuffer, on purpose.** An array indexed at run time costs
 roughly `i²` steps to reach element `i`, and it shows:
 
 | Pixels held in an array | One full sweep |
 | --- | --- |
-| 512 | 39 ms |
-| 1024 | 136 ms |
-| 2048 | 482 ms |
+| 512 | 22 ms |
+| 1024 | 95 ms |
+| 2048 | 405 ms |
 
 A 64x32 buffer is 2048 pixels, so `plot(x, y)` into one would cap out near two
 frames a second. Walking the screen and asking for each pixel as it is emitted
-costs 18 ms instead, which is why `present` calls `shade` rather than the other
+costs 7 ms instead, which is why `present` calls `shade` rather than the other
 way round.
 
 That inversion needs a function pointer, which a Brainfuck tape has no way to
@@ -185,7 +185,7 @@ alone at end of input, so with `min 0 time 0` set, "nobody pressed anything"
 arrives as `0` and the loop keeps running.
 
 [`bounce.cra`](examples/bounce.cra) is the two together — a ball bouncing
-around a drifting background, steered with `wasd`, at about 36 ms a frame:
+around a drifting background, steered with `wasd`, at about 5 ms a frame:
 
 ```bash
 stty -icanon -echo min 0 time 0
@@ -217,11 +217,11 @@ command, so there is nothing to poll for.
 It is also where the scan-order design earns itself. A ray belongs to a
 *column*, not a pixel, so casting one per `shade` call would mean 2048 casts a
 frame instead of 64. Instead `cast_scene` runs first and leaves one entry per
-column behind, and `shade` only looks up the column its pixel landed in. Three
-small array reads per pixel cost about 13 ms; the whole frame is 22 ms.
+column behind, and `shade` only looks up the column its pixel landed in. A
+whole frame takes about 23 ms.
 
-At 1.6M Brainfuck commands it is one of the larger examples here, and most of
-the second it takes to start is `hypothalamus` compiling that.
+At 740K Brainfuck commands it is one of the larger examples here, and most of
+the half second it takes to start is `hypothalamus` compiling that.
 
 ## The language
 
@@ -414,20 +414,22 @@ what it does:
 - routing every unit through a **single** call to the function that writes
   output, instead of four — 977 KB to 438 KB.
 
-Neither is a trick: they are just "call the big helper from one place".
+Neither is a trick: they are just "call the big helper from one place". A
+cheaper `<` in the compiler has since taken it to 106 KB, which is the report
+below.
 
 Finding *which* helper used to be guesswork. `--stats` now says:
 
 ```bash
 $ cranium lobotomy.cra --stats -o lobotomy.bf
-cranium: 436450 brainfuck commands, 83 tape cells
+cranium: 106300 brainfuck commands, 65 tape cells
 cranium: where the commands went:
-cranium:    305721 (70%)  print            8 calls, 46-151938
-cranium:     17985 ( 4%)  indent           1 call
-cranium:     10389 ( 2%)  println          18 calls, 23-1692
-cranium:      8547 ( 1%)  emit             1 call
+cranium:     41601 (39%)  print            8 calls, 46-19878
+cranium:     10389 ( 9%)  println          18 calls, 23-1692
+cranium:      8547 ( 8%)  emit             1 call
+cranium:      7901 ( 7%)  kind_of          1 call
 cranium: note: `print` is inlined 8 times; calling it from one place would save
-cranium:       roughly 153783 commands, about 35% of the program
+cranium:       roughly 21723 commands, about 20% of the program
 ```
 
 The number is what each function's *own* body contributed, with the calls it
@@ -435,7 +437,7 @@ made subtracted — so the column adds up rather than counting nested calls
 twice, and the percentages partition the program.
 
 Where call sites differ wildly the report gives a range instead of an average,
-because they often do: `print` above runs from 46 commands to 151,938. The
+because they often do: `print` above runs from 46 commands to 19,878. The
 cheap ones are strings and the expensive one is a number, which is the
 decimal-conversion routine showing up exactly where the advice above says it
 will.
@@ -456,11 +458,11 @@ scalars. `--stats` shows where they landed:
 
 ```bash
 $ cranium bfi.cra --stats -o bfi.bf
-cranium: 339864 brainfuck commands, 3220 tape cells
-cranium:   43 cells away: program (1007 cells)
-cranium:   1050 cells away: jump (1007 cells)
-cranium:   2057 cells away: tape (1031 cells)
-cranium:   3088 cells away: stack (135 cells)
+cranium: 312616 brainfuck commands, 3216 tape cells
+cranium:   39 cells away: program (1007 cells)
+cranium:   1046 cells away: jump (1007 cells)
+cranium:   2053 cells away: tape (1031 cells)
+cranium:   3084 cells away: stack (135 cells)
 ```
 
 The first array declared is the cheapest to reach, so declare the one your
@@ -468,8 +470,10 @@ hottest loop leans on first. It is worth measuring rather than guessing:
 whichever array is *touched* most often per iteration wins, which is not always
 the one mentioned most often in the source.
 
-Comparisons come next. `==` and `!=` are cheap; `<`, `<=`, `>`, and `>=` split
-each byte into bits, which costs about twice the operand values. Multiplication
+Comparisons come next. `==` and `!=` are cheap; `<`, `<=`, `>`, and `>=` count
+both sides down together until one runs out, which is also linear in the
+values but a longer loop — about 1,350 commands for an `if` on a byte, where
+splitting each byte into bits used to take 7,950. Multiplication
 and division on `int` use shift-and-add, so they stay bounded by the bit width,
 and multiplying by a constant only pays for that constant's set bits.
 

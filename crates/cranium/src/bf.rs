@@ -447,43 +447,65 @@ impl Bf {
         });
     }
 
+    /// Run `body` once if the cell at `value` is zero, in a fixed number of
+    /// steps however large `value` is.
+    ///
+    /// [`Bf::if_zero`] copies the cell to test it, which costs its value. This
+    /// reads it in place instead, with the one piece of pointer arithmetic
+    /// Brainfuck allows: `[>-]` either leaves the pointer where it was or moves
+    /// it one cell right, and the rest of the sequence is arranged so both
+    /// routes end on the same cell again. It needs the two cells after `value`
+    /// to be zero, so allocate the three together, and `body` must leave those
+    /// two alone.
+    pub fn if_zero_in_place(&mut self, value: Addr, body: impl FnOnce(&mut Self)) {
+        self.goto(value);
+        // The first cell after `value` becomes a flag that `[>-]` clears only
+        // when `value` is nonzero. Either way the pointer then steps right:
+        // onto the flag (still set) when `value` was zero, or onto the always
+        // zero cell after it when it was not. Only the first route enters the
+        // loop, and the loop leaves from that same always-zero cell.
+        self.emit_raw(">+<[>-]>[<");
+        self.set_pos(value);
+        body(self);
+        self.goto(value);
+        self.emit_raw(">->]<<");
+        self.set_pos(value);
+    }
+
     /// Set `out` to `1` when the byte at `lhs` is less than the byte at `rhs`.
     ///
-    /// Both operands are split into bits and compared from the top down. That
-    /// costs about twice each operand's value, where cancelling the two cells
-    /// against each other one step at a time would cost their product.
+    /// Counts both copies down together until one runs out: `lhs` is smaller
+    /// exactly when `rhs` still has something left. Each step tests both
+    /// counters with [`Bf::if_zero_in_place`], so it costs the same however big
+    /// they are, and the whole comparison runs in time proportional to the
+    /// operands - as splitting them into bits did, in far less code: a program
+    /// that does nothing but branch on a byte `<` went from 7,953 commands to
+    /// 1,350.
     pub fn byte_lt(&mut self, out: Addr, lhs: Addr, rhs: Addr) {
         self.scope(|bf| {
-            let left = bf.alloc_zeroed(BITS_PER_CELL);
-            let right = bf.alloc_zeroed(BITS_PER_CELL);
-            bf.byte_bits(lhs, left);
-            bf.byte_bits(rhs, right);
+            // Each counter brings the two zero cells its test needs.
+            let left = bf.alloc_zeroed(3);
+            let right = bf.alloc_zeroed(3);
+            let running = bf.alloc_zeroed(1);
+            bf.add_copy(lhs, left);
+            bf.add_copy(rhs, right);
 
-            bf.zero(out);
-            let decided = bf.alloc_zeroed(1);
-            for index in (0..BITS_PER_CELL as Addr).rev() {
-                let left_bit = left + index;
-                let right_bit = right + index;
-                bf.if_zero(decided, |bf| {
-                    // Every cell here holds 0 or 1, so these tests are cheap.
-                    bf.if_else(
-                        left_bit,
-                        |bf| bf.if_zero(right_bit, |bf| bf.set(decided, 1)),
-                        |bf| {
-                            bf.if_nonzero(right_bit, |bf| {
-                                bf.set(out, 1);
-                                bf.set(decided, 1);
-                            })
-                        },
-                    );
-                });
-            }
+            let both_nonzero = |bf: &mut Self| {
+                bf.set(running, 1);
+                bf.if_zero_in_place(left, |bf| bf.zero(running));
+                bf.if_zero_in_place(right, |bf| bf.zero(running));
+            };
+            both_nonzero(bf);
+            bf.loop_at(running, |bf| {
+                bf.add(left, -1);
+                bf.add(right, -1);
+                both_nonzero(bf);
+            });
 
-            bf.zero(decided);
-            for index in 0..BITS_PER_CELL as Addr {
-                bf.zero(left + index);
-                bf.zero(right + index);
-            }
+            bf.set(out, 1);
+            bf.if_zero_in_place(right, |bf| bf.zero(out));
+            bf.zero(left);
+            bf.zero(right);
         });
     }
 
@@ -553,7 +575,23 @@ mod tests {
 
     #[test]
     fn compares_bytes() {
-        for (lhs, rhs) in [(0_u8, 0_u8), (3, 9), (9, 3), (255, 254), (1, 255)] {
+        let pairs = [
+            (0_u8, 0_u8),
+            (0, 1),
+            (1, 0),
+            (3, 9),
+            (9, 3),
+            (7, 7),
+            (127, 128),
+            (128, 127),
+            (255, 254),
+            (254, 255),
+            (1, 255),
+            (255, 255),
+            (0, 255),
+            (255, 0),
+        ];
+        for (lhs, rhs) in pairs {
             let mut bf = Bf::new();
             let a = bf.alloc_zeroed(1);
             let b = bf.alloc_zeroed(1);

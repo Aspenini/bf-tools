@@ -8,8 +8,8 @@
 //! Costs are worth knowing when writing Cranium:
 //!
 //! - equality is linear in the operand values;
-//! - ordering (`<`, `<=`, `>`, `>=`) splits each byte into bits, so it costs
-//!   about twice the operand values - more than equality, but not dramatically;
+//! - ordering (`<`, `<=`, `>`, `>=`) counts both bytes down together until one
+//!   runs out, so it is linear in the operand values too, with a longer loop;
 //! - multiplication and division on `int` use shift-and-add, so they are
 //!   bounded by the bit width rather than the operand values.
 //!

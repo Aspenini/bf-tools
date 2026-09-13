@@ -1173,23 +1173,23 @@ fn bounce_example_compiles() {
     let compiled =
         compile_str(include_str!("../examples/bounce.cra")).expect("bounce.cra should compile");
 
-    assert!(compiled.code.len() > 100_000, "suspiciously small");
+    assert!(compiled.code.len() > 50_000, "suspiciously small");
     assert!(
         compiled.cells_used < 200,
         "the demo should not want a big tape"
     );
 }
 
-/// The raycaster is the biggest example by a wide margin - about 1.9M
-/// Brainfuck commands - so running it here is out of the question. This checks
-/// it still compiles, which is what would break if `std/gfx.cra` changed under
-/// it.
+/// The raycaster is one of the biggest examples - about 740K Brainfuck
+/// commands - and draws a full frame per move, so running it here would cost
+/// more than it is worth. This checks it still compiles, which is what would
+/// break if `std/gfx.cra` changed under it.
 #[test]
 fn raycaster_example_compiles() {
     let compiled = compile_str(include_str!("../examples/raycaster.cra"))
         .expect("raycaster.cra should compile");
 
-    assert!(compiled.code.len() > 1_000_000, "suspiciously small");
+    assert!(compiled.code.len() > 500_000, "suspiciously small");
     // The 16x16 map and the three per-column arrays are most of the tape.
     assert!(
         (2_000..4_000).contains(&compiled.cells_used),
@@ -1252,7 +1252,7 @@ fn printing_a_number_costs_far_more_than_printing_a_string() {
     let print = cost_of(&compiled, "print");
     assert_eq!(print.calls, 2);
     assert!(
-        print.largest > print.smallest * 50,
+        print.largest > print.smallest * 20,
         "a decimal conversion should dwarf a string: {} vs {}",
         print.smallest,
         print.largest
@@ -1599,20 +1599,30 @@ fn main() {
 fn a_condition_known_at_compile_time_costs_almost_nothing() {
     // The same test, once on a length the compiler can see and once on the
     // same value stored in a variable first, which it cannot fold.
+    // Both are measured against the same program with no `if` at all, so the
+    // numbers are what the condition itself cost.
+    let without = compile_str("let arr: byte[81];\nfn main() { let n: byte = 0; }\n")
+        .expect("compiles")
+        .code
+        .len();
     let folded = compile_str(
         "let arr: byte[81];\nfn main() { let n: byte = 0; if len(arr) - 1 < 255 { n = 1; } }\n",
     )
-    .expect("compiles");
+    .expect("compiles")
+    .code
+    .len()
+        - without;
     let computed = compile_str(
         "let arr: byte[81];\nfn main() { let n: byte = 0; let size: int = len(arr); if size - 1 < 255 { n = 1; } }\n",
     )
-    .expect("compiles");
+    .expect("compiles")
+    .code
+    .len()
+        - without;
 
     assert!(
-        folded.code.len() * 4 < computed.code.len(),
-        "folded {} commands, computed {}",
-        folded.code.len(),
-        computed.code.len()
+        folded * 4 < computed,
+        "folded {folded} commands, computed {computed}"
     );
 }
 

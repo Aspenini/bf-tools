@@ -26,9 +26,9 @@
 // stands in for a function pointer, which a Brainfuck tape has no way to hold.
 //
 // There is deliberately no framebuffer. An array indexed at run time costs
-// roughly i^2 steps to reach element i, so a 2048-pixel buffer takes about half
-// a second to fill; walking the screen in scan order and asking for each pixel
-// as it is emitted takes about 17 ms.
+// roughly i^2 steps to reach element i, so a 2048-pixel buffer takes about 0.4
+// seconds to fill; walking the screen in scan order and asking for each pixel
+// as it is emitted takes about 7 ms.
 //
 // The cursor and screen control an animated program needs - `home`, `clear`,
 // `hide_cursor` and the rest - lives in `std/term.cra`, which this file
@@ -71,7 +71,7 @@ fn set_rgb(r: byte, g: byte, b: byte) {
 // components would emit six copies of it.
 //
 // `cranium --stats` puts a number on that: the number `print` below costs
-// about 34,000 Brainfuck commands, against 92 for each of the string prints
+// about 7,400 Brainfuck commands, against 92 for each of the string prints
 // above it. Six of the expensive one would be most of the program.
 // --------------------------------------------------------------------------
 fn gfx_emit_cell() {

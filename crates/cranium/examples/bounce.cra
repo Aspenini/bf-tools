@@ -14,7 +14,7 @@
 // nowhere to put one that would be cheaper than simply drawing again.
 //
 // Brainfuck cannot sleep, so the frame rate is however fast the program runs:
-// about 36 ms a frame, or 27 a second, once hypothalamus has compiled it.
+// about 5 ms a frame once hypothalamus has compiled it.
 //
 // INPUT
 //
