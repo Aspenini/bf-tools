@@ -305,9 +305,22 @@ impl Bf {
             self.num_zero(addr, width);
             return;
         }
+        // Whole bytes move a cell at a time, which costs the value moved,
+        // rather than eight single-bit shifts across every cell each.
+        let bytes = amount / BITS_PER_CELL;
+        if bytes > 0 {
+            // Highest first, so every source is read before it is overwritten.
+            for index in (0..width).rev() {
+                let dst = addr + index as Addr;
+                self.zero(dst);
+                if index >= bytes {
+                    self.move_add(addr + (index - bytes) as Addr, &[dst]);
+                }
+            }
+        }
         self.scope(|bf| {
             let discard = bf.alloc_zeroed(1);
-            for _ in 0..amount {
+            for _ in 0..amount % BITS_PER_CELL {
                 bf.num_shl1(addr, width, discard);
             }
             bf.zero(discard);
@@ -345,9 +358,36 @@ impl Bf {
             });
             return;
         }
+        // Whole bytes move a cell at a time, as in `num_shl_const`. A signed
+        // value's sign is read first, since moving the cells overwrites it, and
+        // the cells vacated at the top are filled with it.
+        let bytes = amount / BITS_PER_CELL;
+        if bytes > 0 {
+            self.scope(|bf| {
+                let negative = bf.alloc_zeroed(1);
+                if arithmetic {
+                    bf.num_is_negative(negative, addr, width);
+                }
+                // Lowest first, so every source is read before it is overwritten.
+                for index in 0..width {
+                    let dst = addr + index as Addr;
+                    bf.zero(dst);
+                    if index + bytes < width {
+                        bf.move_add(addr + (index + bytes) as Addr, &[dst]);
+                    }
+                }
+                if arithmetic {
+                    bf.if_nonzero_consume(negative, |bf| {
+                        for index in width - bytes..width {
+                            bf.set(addr + index as Addr, 255);
+                        }
+                    });
+                }
+            });
+        }
         self.scope(|bf| {
             let discard = bf.alloc_zeroed(1);
-            for _ in 0..amount {
+            for _ in 0..amount % BITS_PER_CELL {
                 if arithmetic {
                     bf.num_sar1(addr, width, discard);
                 } else {
